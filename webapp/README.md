@@ -20,6 +20,21 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Important Structure
+### Setting up .env files
+Create a .env.local file:
+.env files are gitignored so you will have to configure this locally.
+
+```
+NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+```
+
+### src/app/
+Files within src/app/ are html endpoints. The file structure within app models the url routes. All files within this directory should be direct web pages.
+### src/components/
+The src/components/ folder is used for other react components that do not show up as direct web pages.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
