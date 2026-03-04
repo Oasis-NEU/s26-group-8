@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import logo from '../assets/logo.jpg';
 import './FeedbackTab.css';
 
 const FeedbackTab = () => {
@@ -18,7 +19,7 @@ const FeedbackTab = () => {
             </button>
 
             <div className="feedback-mascot">
-                <img src="/path-to-your-image.png" alt="Mascot" className="logo.jpg"/>
+              <img src={logo} alt="RateMyHusky Mascot" className="feedback-mascot-img" />
             </div>
 
             <h2 className="feedback-title">Feedback Form</h2>

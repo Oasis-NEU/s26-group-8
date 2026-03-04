@@ -1,10 +1,10 @@
-/**
- * Footer.jsx
- * This component renders the footer of the application
- * It includes links to resources, affiliations, and legal information.
- */
+/*
+  Footer component
+  - Displays branding, resources, affiliations, and legal links
+  - Responsive design for desktop and mobile
+*/
 
-
+import logo from '../assets/logo.jpg';
 import './Footer.css';
 
 const Footer = () => {
@@ -12,6 +12,7 @@ const Footer = () => {
     <footer className="footer">
       <div className="footer-top">
         <div className="footer-brand">
+          <img src={logo} alt="RateMyHusky" className="footer-brand-logo" />
           <div className="footer-brand-name">
             <span>Rate</span>MyHusky
           </div>
@@ -29,7 +30,9 @@ const Footer = () => {
           <div className="footer-col">
             <h4>Affiliations</h4>
             <ul>
-              <li><a href="https://oasisneu.com/" target="_blank" rel="noreferrer">Oasis</a></li>
+              <li><a href="https://sandboxneu.com" target="_blank" rel="noreferrer">Sandbox</a></li>
+              <li><a href="https://graduatenu.com" target="_blank" rel="noreferrer">GraduateNU</a></li>
+              <li><a href="https://cooper.northeastern.edu" target="_blank" rel="noreferrer">Cooper</a></li>
             </ul>
           </div>
         </div>
@@ -41,11 +44,11 @@ const Footer = () => {
           <span role="img" aria-label="heart">❤️</span> by UX Designers and
           Developers of{' '}
           <a
-            href="https://oasisneu.com/"
+            href="https://sandboxneu.com"
             target="_blank"
             rel="noreferrer"
           >
-            Oasis
+            Sandbox
           </a>{' '}
           in Boston, MA.
         </span>
