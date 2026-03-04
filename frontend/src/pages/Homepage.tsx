@@ -1,13 +1,8 @@
-/**
- * Homepage.jsx
- * The main landing page of the application, featuring a search bar and navigation.
- * This component serves as the entry point for users to access the application's features.
- */
-
 import Navbar from '../components/Navbar';
 import SearchBar from '../components/SearchBar';
 import Footer from '../components/Footer';
 import FeedbackTab from '../components/FeedbackTab';
+import ThemeToggle from '../components/ThemeToggle';
 import './Homepage.css';
 
 const Homepage = () => {
@@ -21,6 +16,7 @@ const Homepage = () => {
 
       <Footer />
       <FeedbackTab />
+      <ThemeToggle />
     </div>
   );
 };

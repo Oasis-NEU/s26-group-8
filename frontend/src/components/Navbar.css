@@ -1,11 +1,3 @@
-/**
- * Navbar.css
- * This file contains the styles for the Navbar component.
- * It defines the layout, colors, fonts, and responsive behavior of the navigation bar.
- */
-
-
-
 .navbar {
   position: fixed;
   top: 0;
@@ -21,8 +13,8 @@
 }
 
 .navbar-logo {
-  font-size: 2.5rem;
-  font-weight: 700;
+  font-size: 1.35rem;
+  font-weight: 900;
   letter-spacing: -0.3px;
   text-decoration: none;
   color: #333;
@@ -65,7 +57,7 @@
   border: none;
   border-radius: 18px;
   padding: 7px 20px;
-  font-size: 1rem;
+  font-size: 0.85rem;
   font-weight: 700;
   font-family: 'Nunito', sans-serif;
   cursor: pointer;
@@ -79,4 +71,18 @@
 @media (max-width: 768px) {
   .navbar { padding: 10px 16px; }
   .navbar-logo { font-size: 1.15rem; }
+}
+
+/* ---------- dark theme ---------- */
+.dark .navbar-logo {
+  color: #e0e0e0;
+}
+
+.dark .nav-link {
+  color: #ccc;
+}
+
+.dark .signin-btn {
+  background: #d6394c;
+  color: #fff;
 }

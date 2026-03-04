@@ -1,11 +1,3 @@
-/**
- * Footer.css
- * This file contains the styles for the Footer component.
- * It defines the layout, colors, fonts, and responsive behavior of the footer section.
- */
-
-
-
 .footer {
   background: #fff;
   padding: 48px 48px 0;
@@ -25,14 +17,14 @@
 }
 
 .footer-brand-logo {
-  width: 200px;
+  width: 120px;
   height: auto;
   margin-bottom: 10px;
 }
 
 .footer-brand-name {
   font-size: 1.6rem;
-  font-weight: 700;
+  font-weight: 900;
   letter-spacing: -0.4px;
   color: #333;
 }
@@ -114,4 +106,39 @@
   .footer-columns { gap: 32px; }
   .footer { padding: 32px 24px 0; }
   .footer-bottom { flex-direction: column; text-align: center; }
+}
+
+/* ---------- dark theme ---------- */
+.dark .footer {
+  background: #1e1e1e;
+  border-top-color: #333;
+}
+
+.dark .footer-brand-name {
+  color: #e0e0e0;
+}
+
+.dark .footer-col h4 {
+  color: #777;
+}
+
+.dark .footer-col a {
+  color: #bbb;
+}
+
+.dark .footer-col a:hover {
+  color: #d6394c;
+}
+
+.dark .footer-bottom {
+  border-top-color: #333;
+  color: #777;
+}
+
+.dark .footer-bottom-links a {
+  color: #999;
+}
+
+.dark .footer-bottom-links a:hover {
+  color: #d6394c;
 }

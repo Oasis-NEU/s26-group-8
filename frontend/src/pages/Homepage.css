@@ -16,3 +16,13 @@
   padding: 120px 24px 80px;
   background-color: #f5f5f5;
 }
+
+/* ---------- dark theme ---------- */
+.dark .homepage {
+  background-color: #1a1a1a;
+  color: #e0e0e0;
+}
+
+.dark .homepage-hero {
+  background-color: #1a1a1a;
+}

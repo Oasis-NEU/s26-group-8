@@ -1,0 +1,39 @@
+.theme-toggle {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 200;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 1.5px solid #ddd;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  color: #f5a623;
+  transition: background 0.3s, border-color 0.3s, color 0.3s;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+
+.theme-toggle svg {
+  width: 20px;
+  height: 20px;
+}
+
+.theme-toggle:hover {
+  border-color: #d6394c;
+}
+
+/* Dark mode styles */
+.dark .theme-toggle {
+  background: #2a2a2a;
+  border-color: #555;
+  color: #ccc;
+}
+
+.dark .theme-toggle:hover {
+  border-color: #d6394c;
+}
