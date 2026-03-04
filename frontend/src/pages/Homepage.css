@@ -6,6 +6,9 @@
   color: #333;
 }
 
+/* ==============================
+   HERO
+   ============================== */
 .homepage-hero {
   min-height: 100vh;
   display: flex;
@@ -13,11 +16,335 @@
   align-items: center;
   justify-content: center;
   position: relative;
-  padding: 120px 24px 80px;
+  padding: 120px 24px 60px;
   background-color: #f5f5f5;
+  overflow: hidden;
 }
 
-/* ---------- dark theme ---------- */
+.hero-bg-pattern {
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background-size: 180px 180px;
+  background-repeat: repeat;
+  opacity: 0.045;
+  transform: rotate(-25deg);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.homepage-hero .search-wrapper {
+  position: relative;
+  z-index: 10;
+}
+
+.hero-tagline,
+.hero-subtitle,
+.college-filters {
+  position: relative;
+  z-index: 1;
+}
+
+.hero-tagline {
+  font-size: 2.6rem;
+  font-weight: 900;
+  text-align: center;
+  margin-bottom: 12px;
+  animation: fadeUp 0.6s ease both;
+}
+
+.hero-tagline span {
+  color: #d6394c;
+}
+
+.hero-subtitle {
+  font-size: 1.05rem;
+  color: #777;
+  text-align: center;
+  margin-bottom: 36px;
+  animation: fadeUp 0.6s 0.15s ease both;
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(18px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ---- college quick-filters ---- */
+.college-filters {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 28px;
+  animation: fadeUp 0.6s 0.45s ease both;
+}
+
+.college-chip {
+  background: #fff;
+  border: 1.5px solid #ddd;
+  border-radius: 20px;
+  padding: 7px 18px;
+  font-family: 'Nunito', sans-serif;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #555;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.college-chip:hover {
+  border-color: #d6394c;
+  color: #d6394c;
+  background: #fef0f0;
+}
+
+.college-chip:active,
+.college-chip.active {
+  background: #d6394c;
+  border-color: #d6394c;
+  color: #fff;
+}
+
+/* ==============================
+   STATS BANNER
+   ============================== */
+.stats-banner {
+  display: flex;
+  justify-content: center;
+  gap: 48px;
+  padding: 48px 24px;
+  background: #d6394c;
+  color: #fff;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.stat-value {
+  font-size: 2rem;
+  font-weight: 900;
+}
+
+.stat-label {
+  font-size: 0.85rem;
+  font-weight: 700;
+  opacity: 0.85;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+
+/* ==============================
+   SHARED SECTION STYLES
+   ============================== */
+.section {
+  padding: 60px 48px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 28px;
+}
+
+.section-title {
+  font-size: 1.5rem;
+  font-weight: 900;
+}
+
+/* ==============================
+   TRENDING CAROUSEL
+   ============================== */
+.carousel-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.carousel-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1.5px solid #ddd;
+  background: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: #555;
+  transition: all 0.2s;
+}
+
+.carousel-btn:hover {
+  border-color: #d6394c;
+  color: #d6394c;
+}
+
+.carousel-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.carousel {
+  display: flex;
+  gap: 20px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  padding-bottom: 8px;
+}
+
+.carousel::-webkit-scrollbar {
+  display: none;
+}
+
+.prof-card {
+  flex: 0 0 220px;
+  scroll-snap-align: start;
+  background: #fff;
+  border-radius: 14px;
+  padding: 28px 22px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+  transition: transform 0.2s, box-shadow 0.2s;
+  cursor: pointer;
+}
+
+.prof-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+}
+
+.prof-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: #d6394c;
+  color: #fff;
+  font-size: 1.4rem;
+  font-weight: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+
+.prof-name {
+  font-size: 0.95rem;
+  font-weight: 900;
+  margin-bottom: 4px;
+}
+
+.prof-dept {
+  font-size: 0.78rem;
+  color: #888;
+  margin-bottom: 12px;
+}
+
+.prof-rating {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.prof-score {
+  font-size: 0.9rem;
+  font-weight: 900;
+  color: #d6394c;
+}
+
+.prof-reviews {
+  font-size: 0.75rem;
+  color: #aaa;
+}
+
+/* ---- stars ---- */
+.stars {
+  display: flex;
+  gap: 1px;
+}
+
+.star {
+  font-size: 0.9rem;
+  color: #ddd;
+}
+
+.star.filled {
+  color: #f5a623;
+}
+
+/* ==============================
+   RECENT REVIEWS
+   ============================== */
+.reviews-section {
+  background: #fff;
+}
+
+.reviews-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+}
+
+.review-card {
+  background: #f9f9f9;
+  border-radius: 14px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.review-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.06);
+}
+
+.review-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.review-prof {
+  font-size: 0.95rem;
+  font-weight: 900;
+}
+
+.review-course {
+  font-size: 0.78rem;
+  color: #d6394c;
+  font-weight: 700;
+}
+
+.review-text {
+  font-size: 0.88rem;
+  line-height: 1.55;
+  color: #555;
+}
+
+.review-date {
+  font-size: 0.72rem;
+  color: #bbb;
+  align-self: flex-end;
+}
+
+/* ==============================
+   DARK THEME
+   ============================== */
 .dark .homepage {
   background-color: #1a1a1a;
   color: #e0e0e0;
@@ -25,4 +352,114 @@
 
 .dark .homepage-hero {
   background-color: #1a1a1a;
+}
+
+.dark .hero-bg-pattern {
+  opacity: 0.03;
+  filter: invert(1);
+}
+
+.dark .hero-subtitle {
+  color: #999;
+}
+
+.dark .college-chip {
+  background: #2a2a2a;
+  border-color: #444;
+  color: #ccc;
+}
+
+.dark .college-chip:hover {
+  border-color: #d6394c;
+  color: #d6394c;
+  background: #3a2020;
+}
+
+.dark .college-chip:active,
+.dark .college-chip.active {
+  background: #d6394c;
+  color: #fff;
+}
+
+.dark .prof-card {
+  background: #242424;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.2);
+}
+
+.dark .prof-card:hover {
+  box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+}
+
+.dark .prof-dept {
+  color: #999;
+}
+
+.dark .prof-reviews {
+  color: #777;
+}
+
+.dark .carousel-btn {
+  background: #2a2a2a;
+  border-color: #444;
+  color: #ccc;
+}
+
+.dark .carousel-btn:hover {
+  border-color: #d6394c;
+  color: #d6394c;
+}
+
+.dark .reviews-section {
+  background: #1e1e1e;
+}
+
+.dark .review-card {
+  background: #242424;
+}
+
+.dark .review-card:hover {
+  box-shadow: 0 6px 18px rgba(0,0,0,0.3);
+}
+
+.dark .review-text {
+  color: #bbb;
+}
+
+.dark .review-date {
+  color: #666;
+}
+
+.dark .star {
+  color: #444;
+}
+
+/* ==============================
+   RESPONSIVE
+   ============================== */
+@media (max-width: 768px) {
+  .hero-tagline {
+    font-size: 1.8rem;
+  }
+
+  .hero-subtitle {
+    font-size: 0.9rem;
+  }
+
+  .stats-banner {
+    flex-wrap: wrap;
+    gap: 24px 40px;
+    padding: 36px 24px;
+  }
+
+  .stat-value {
+    font-size: 1.5rem;
+  }
+
+  .section {
+    padding: 40px 20px;
+  }
+
+  .reviews-grid {
+    grid-template-columns: 1fr;
+  }
 }

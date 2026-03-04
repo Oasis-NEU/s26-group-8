@@ -1,13 +1,11 @@
-/**
- * SearchBar.jsx
- * This component renders the search bar
- * It allows users to search for professors or courses
- * The search type can be selected from a dropdown menu, and the placeholder text updates accordingly.
- */
-
-
 import { useState } from 'react';
+import Dropdown from './Dropdown';
 import './SearchBar.css';
+
+const searchOptions = [
+  { value: 'Professor', label: 'Professor' },
+  { value: 'Course', label: 'Course' },
+];
 
 const SearchBar = () => {
   const [searchType, setSearchType] = useState('Professor');
@@ -20,14 +18,12 @@ const SearchBar = () => {
   return (
     <div className="search-wrapper">
       <div className="search-bar">
-        <select
+        <Dropdown
           className="search-dropdown"
+          options={searchOptions}
           value={searchType}
-          onChange={(e) => setSearchType(e.target.value)}
-        >
-          <option value="Professor">Professor</option>
-          <option value="Course">Course</option>
-        </select>
+          onChange={setSearchType}
+        />
 
         <div className="search-divider" />
 
