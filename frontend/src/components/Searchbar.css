@@ -4,7 +4,6 @@
  * It defines the layout, colors, fonts, and interactive states of the search bar.
  */
 
-@import url('https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&display=swap');
 
 .search-wrapper {
   position: relative;
@@ -33,7 +32,7 @@
   -webkit-appearance: none;
   border: none;
   background: transparent;
-  font-family: 'Lato', sans-serif;
+  font-family: 'Nunito', sans-serif;
   font-size: 1.25rem;
   font-weight: 700;
   color: #333;
@@ -72,7 +71,7 @@
   flex: 1;
   border: none;
   outline: none;
-  font-family: 'Lato', sans-serif;
+  font-family: 'Nunito', sans-serif;
   font-size: 1.25rem;
   padding: 13px 20px 14px 4px;
   color: #333;

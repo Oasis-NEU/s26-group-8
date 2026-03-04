@@ -4,13 +4,13 @@
  * It defines the layout, colors, fonts, and responsive behavior of the footer section.
  */
 
-@import url('https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&display=swap');
+
 
 .footer {
   background: #fff;
   padding: 48px 48px 0;
   border-top: 1px solid #e8e8e8;
-  font-family: 'Lato', sans-serif;
+  font-family: 'Nunito', sans-serif;
 }
 
 .footer-top {
@@ -32,7 +32,7 @@
 
 .footer-brand-name {
   font-size: 1.6rem;
-  font-weight: 900;
+  font-weight: 700;
   letter-spacing: -0.4px;
   color: #333;
 }

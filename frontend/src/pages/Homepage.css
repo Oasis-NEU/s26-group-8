@@ -1,7 +1,5 @@
-@import url('https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&display=swap');
-
 .homepage {
-  font-family: 'Lato', sans-serif;
+  font-family: 'Nunito', sans-serif;
   display: flex;
   flex-direction: column;
   background-color: #f5f5f5;

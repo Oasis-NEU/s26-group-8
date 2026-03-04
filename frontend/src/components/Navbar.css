@@ -4,7 +4,7 @@
  * It defines the layout, colors, fonts, and responsive behavior of the navigation bar.
  */
 
-@import url('https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&display=swap');
+
 
 .navbar {
   position: fixed;
@@ -17,12 +17,12 @@
   justify-content: space-between;
   padding: 12px 28px;
   background: transparent;
-  font-family: 'Lato', sans-serif;
+  font-family: 'Nunito', sans-serif;
 }
 
 .navbar-logo {
-  font-size: 1.35rem;
-  font-weight: 900;
+  font-size: 2.5rem;
+  font-weight: 700;
   letter-spacing: -0.3px;
   text-decoration: none;
   color: #333;
@@ -67,7 +67,7 @@
   padding: 7px 20px;
   font-size: 1rem;
   font-weight: 700;
-  font-family: 'Lato', sans-serif;
+  font-family: 'Nunito', sans-serif;
   cursor: pointer;
   transition: background 0.2s;
 }
