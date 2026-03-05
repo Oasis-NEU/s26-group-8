@@ -1,0 +1,155 @@
+.footer {
+  background: #fff;
+  padding: 48px 48px 0;
+  border-top: 1px solid #e8e8e8;
+  font-family: 'Nunito', sans-serif;
+}
+
+.footer-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 48px;
+  padding-bottom: 36px;
+}
+
+.footer-brand {
+  min-width: 180px;
+}
+
+.footer-brand-logo {
+  width: 120px;
+  height: auto;
+  margin-bottom: 10px;
+}
+
+.footer-brand-name {
+  font-size: 1.6rem;
+  font-weight: 900;
+  letter-spacing: -0.4px;
+  color: #333;
+}
+
+.footer-brand-name span {
+  color: #d6394c;
+}
+
+.footer-columns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 64px;
+  flex: 1;
+}
+
+.footer-col h4 {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: #999;
+  margin-bottom: 14px;
+}
+
+.footer-col ul {
+  list-style: none;
+}
+
+.footer-col li {
+  margin-bottom: 10px;
+}
+
+.footer-col a {
+  font-size: 0.92rem;
+  color: #444;
+  text-decoration: none;
+  transition: color 0.2s;
+}
+
+.footer-col a:hover {
+  color: #d6394c;
+}
+
+.footer-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  border-top: 1px solid #eee;
+  padding: 18px 0;
+  font-size: 0.82rem;
+  color: #888;
+}
+
+.footer-bottom a {
+  color: #d6394c;
+  text-decoration: underline;
+  font-weight: 700;
+}
+
+.footer-bottom-links {
+  display: flex;
+  gap: 24px;
+}
+
+.footer-bottom-links a {
+  color: #666;
+  text-decoration: none;
+  font-size: 0.82rem;
+}
+
+.footer-bottom-links a:hover {
+  color: #d6394c;
+}
+
+@media (max-width: 768px) {
+  .footer { padding: 32px 24px 0; }
+  .footer-top { flex-direction: column; gap: 28px; }
+  .footer-columns { gap: 32px; }
+  .footer-bottom { flex-direction: column; text-align: center; gap: 16px; }
+  .footer-bottom-links { justify-content: center; }
+  .footer-brand-logo { width: 80px; }
+}
+
+@media (max-width: 480px) {
+  .footer { padding: 24px 16px 0; }
+  .footer-brand-name { font-size: 1.3rem; }
+  .footer-col a { font-size: 0.85rem; }
+  .footer-bottom { font-size: 0.75rem; padding: 14px 0; }
+  .footer-bottom-links { gap: 16px; }
+  .footer-bottom-links a { font-size: 0.75rem; }
+}
+
+/* ---------- dark theme ---------- */
+.dark .footer {
+  background: #1e1e1e;
+  border-top-color: #333;
+}
+
+.dark .footer-brand-name {
+  color: #e0e0e0;
+}
+
+.dark .footer-col h4 {
+  color: #777;
+}
+
+.dark .footer-col a {
+  color: #bbb;
+}
+
+.dark .footer-col a:hover {
+  color: #d6394c;
+}
+
+.dark .footer-bottom {
+  border-top-color: #333;
+  color: #777;
+}
+
+.dark .footer-bottom-links a {
+  color: #999;
+}
+
+.dark .footer-bottom-links a:hover {
+  color: #d6394c;
+}

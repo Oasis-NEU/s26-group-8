@@ -1,0 +1,621 @@
+.homepage {
+  font-family: 'Nunito', sans-serif;
+  display: flex;
+  flex-direction: column;
+  background-color: #f5f5f5;
+  color: #333;
+}
+
+/* ==============================
+   HERO
+   ============================== */
+.homepage-hero {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  padding: 120px 24px 60px;
+  background-color: #f5f5f5;
+  overflow: hidden;
+}
+
+.hero-bg-pattern {
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background-size: 180px 180px;
+  background-repeat: repeat;
+  opacity: 0.045;
+  transform: rotate(-25deg);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.homepage-hero .search-wrapper {
+  position: relative;
+  z-index: 10;
+}
+
+.hero-tagline,
+.hero-subtitle {
+  position: relative;
+  z-index: 1;
+}
+
+.hero-tagline {
+  font-size: 3.25rem;
+  font-weight: 900;
+  text-align: center;
+  margin-bottom: 14px;
+  animation: fadeUp 0.6s ease both;
+}
+
+.hero-tagline span {
+  color: #d6394c;
+}
+
+.hero-subtitle {
+  font-size: 1.3rem;
+  color: #777;
+  text-align: center;
+  margin-bottom: 44px;
+  animation: fadeUp 0.6s 0.15s ease both;
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(18px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ==============================
+   STATS BANNER
+   ============================== */
+.stats-banner {
+  display: flex;
+  justify-content: center;
+  gap: 48px;
+  padding: 48px 24px;
+  background: #d6394c;
+  color: #fff;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.stat-value {
+  font-size: 2rem;
+  font-weight: 900;
+}
+
+.stat-label {
+  font-size: 0.85rem;
+  font-weight: 700;
+  opacity: 0.85;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+
+/* ==============================
+   SHARED SECTION STYLES
+   ============================== */
+.section {
+  padding: 60px 48px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 28px;
+}
+
+.section-title {
+  font-size: 1.5rem;
+  font-weight: 900;
+}
+
+/* ==============================
+   GOAT LEADERBOARD
+   ============================== */
+.goat-college-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 28px;
+}
+
+.goat-tab {
+  background: #fff;
+  border: 1.5px solid #ddd;
+  border-radius: 20px;
+  padding: 8px 20px;
+  font-family: 'Nunito', sans-serif;
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: #555;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.goat-tab:hover {
+  border-color: #d6394c;
+  color: #d6394c;
+}
+
+.goat-tab.active {
+  background: #d6394c;
+  border-color: #d6394c;
+  color: #fff;
+}
+
+.goat-leaderboard {
+  background: #fff;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+}
+
+.goat-header-row {
+  display: grid;
+  grid-template-columns: 60px 2fr 1.5fr 1.5fr 0.8fr;
+  align-items: center;
+  padding: 14px 24px;
+  background: #f0f0f0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: #999;
+}
+
+.goat-row {
+  display: grid;
+  grid-template-columns: 60px 2fr 1.5fr 1.5fr 0.8fr;
+  align-items: center;
+  padding: 16px 24px;
+  border-bottom: 1px solid #f0f0f0;
+  transition: background 0.15s;
+  cursor: pointer;
+}
+
+.goat-row:last-child {
+  border-bottom: none;
+}
+
+.goat-row:hover {
+  background: #fef8f8;
+}
+
+.goat-top3 {
+  background: #fffaf5;
+}
+
+.goat-top3:hover {
+  background: #fff3ea;
+}
+
+.goat-col-rank {
+  font-size: 1.1rem;
+  font-weight: 900;
+  color: #888;
+}
+
+.goat-top3 .goat-col-rank {
+  font-size: 1.3rem;
+}
+
+.goat-col-name {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.goat-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #d6394c;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.goat-name-text {
+  font-weight: 900;
+  font-size: 0.92rem;
+}
+
+.goat-col-dept {
+  font-size: 0.82rem;
+  color: #888;
+}
+
+.goat-col-rating {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.goat-score {
+  font-weight: 900;
+  font-size: 0.95rem;
+  color: #d6394c;
+}
+
+.goat-col-reviews {
+  font-size: 0.85rem;
+  color: #888;
+  font-weight: 700;
+}
+
+/* ---- stars ---- */
+.stars {
+  display: flex;
+  gap: 1px;
+}
+
+.star {
+  font-size: 0.9rem;
+  color: #ddd;
+}
+
+.star.filled {
+  color: #f5a623;
+}
+
+/* ==============================
+   PROFESSOR RANDOMIZER
+   ============================== */
+.randomizer-section {
+  background: #fff;
+}
+
+.randomizer-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 48px;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.randomizer-text {
+  flex: 1;
+}
+
+.randomizer-desc {
+  font-size: 1.05rem;
+  color: #777;
+  line-height: 1.6;
+  margin-top: 12px;
+  margin-bottom: 28px;
+}
+
+.randomizer-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background: #d6394c;
+  color: #fff;
+  border: none;
+  border-radius: 14px;
+  padding: 14px 32px;
+  font-family: 'Nunito', sans-serif;
+  font-size: 1.05rem;
+  font-weight: 900;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.15s;
+}
+
+.randomizer-btn:hover {
+  background: #b82e3f;
+  transform: scale(1.03);
+}
+
+.randomizer-btn:active {
+  transform: scale(0.97);
+}
+
+.randomizer-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+.randomizer-visual {
+  flex-shrink: 0;
+}
+
+.randomizer-dice {
+  font-size: 6rem;
+  animation: float 3s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-12px); }
+}
+
+/* ==============================
+   DARK THEME
+   ============================== */
+.dark .homepage {
+  background-color: #1a1a1a;
+  color: #e0e0e0;
+}
+
+.dark .homepage-hero {
+  background-color: #1a1a1a;
+}
+
+.dark .hero-bg-pattern {
+  opacity: 0.03;
+  filter: invert(1);
+}
+
+.dark .hero-subtitle {
+  color: #999;
+}
+
+.dark .goat-tab {
+  background: #2a2a2a;
+  border-color: #444;
+  color: #ccc;
+}
+
+.dark .goat-tab:hover {
+  border-color: #d6394c;
+  color: #d6394c;
+}
+
+.dark .goat-tab.active {
+  background: #d6394c;
+  border-color: #d6394c;
+  color: #fff;
+}
+
+.dark .goat-leaderboard {
+  background: #242424;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.2);
+}
+
+.dark .goat-header-row {
+  background: #2a2a2a;
+  color: #777;
+}
+
+.dark .goat-row {
+  border-bottom-color: #333;
+}
+
+.dark .goat-row:hover {
+  background: #2e2020;
+}
+
+.dark .goat-top3 {
+  background: #2a2218;
+}
+
+.dark .goat-top3:hover {
+  background: #332818;
+}
+
+.dark .goat-col-rank {
+  color: #777;
+}
+
+.dark .goat-col-dept {
+  color: #999;
+}
+
+.dark .goat-col-reviews {
+  color: #777;
+}
+
+.dark .randomizer-section {
+  background: #1e1e1e;
+}
+
+.dark .randomizer-desc {
+  color: #999;
+}
+
+.dark .star {
+  color: #444;
+}
+
+/* ==============================
+   RESPONSIVE — TABLET
+   ============================== */
+@media (max-width: 768px) {
+  .homepage-hero {
+    padding: 100px 16px 50px;
+  }
+
+  .hero-tagline {
+    font-size: 2rem;
+    padding: 0 8px;
+  }
+
+  .hero-subtitle {
+    font-size: 1rem;
+    padding: 0 8px;
+  }
+
+  .stats-banner {
+    flex-wrap: wrap;
+    gap: 24px 40px;
+    padding: 36px 24px;
+  }
+
+  .stat-value {
+    font-size: 1.5rem;
+  }
+
+  .section {
+    padding: 40px 16px;
+  }
+
+  .section-title {
+    font-size: 1.25rem;
+  }
+
+  .randomizer-content {
+    flex-direction: column;
+    text-align: center;
+    gap: 24px;
+  }
+
+  .randomizer-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .randomizer-dice {
+    font-size: 4rem;
+  }
+
+  .goat-header-row,
+  .goat-row {
+    grid-template-columns: 40px 2fr 1.2fr 0.6fr;
+    padding: 12px 16px;
+  }
+
+  .goat-col-dept {
+    display: none;
+  }
+
+  .goat-college-tabs {
+    gap: 6px;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding-bottom: 6px;
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .goat-college-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .goat-tab {
+    padding: 6px 14px;
+    font-size: 0.78rem;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .goat-avatar {
+    width: 32px;
+    height: 32px;
+    font-size: 0.85rem;
+  }
+
+  .goat-name-text {
+    font-size: 0.82rem;
+  }
+
+  .goat-score {
+    font-size: 0.82rem;
+  }
+}
+
+/* ==============================
+   RESPONSIVE — SMALL PHONE
+   ============================== */
+@media (max-width: 480px) {
+  .homepage-hero {
+    padding: 80px 12px 40px;
+  }
+
+  .hero-tagline {
+    font-size: 1.6rem;
+  }
+
+  .hero-subtitle {
+    font-size: 0.88rem;
+    margin-bottom: 28px;
+  }
+
+  .stats-banner {
+    gap: 18px 28px;
+    padding: 28px 16px;
+  }
+
+  .stat-value {
+    font-size: 1.2rem;
+  }
+
+  .stat-label {
+    font-size: 0.72rem;
+  }
+
+  .section {
+    padding: 32px 12px;
+  }
+
+  .section-title {
+    font-size: 1.1rem;
+  }
+
+  .goat-header-row,
+  .goat-row {
+    grid-template-columns: 32px 1fr 0.6fr;
+    padding: 10px 12px;
+    gap: 8px;
+  }
+
+  .goat-col-reviews {
+    display: none;
+  }
+
+  .goat-avatar {
+    width: 28px;
+    height: 28px;
+    font-size: 0.75rem;
+  }
+
+  .goat-name-text {
+    font-size: 0.78rem;
+  }
+
+  .goat-col-rank {
+    font-size: 0.9rem;
+  }
+
+  .goat-top3 .goat-col-rank {
+    font-size: 1.1rem;
+  }
+
+  .randomizer-desc {
+    font-size: 0.9rem;
+  }
+
+  .randomizer-btn {
+    padding: 12px 24px;
+    font-size: 0.95rem;
+  }
+
+  .randomizer-dice {
+    font-size: 3.5rem;
+  }
+
+  .stars {
+    gap: 0;
+  }
+
+  .star {
+    font-size: 0.78rem;
+  }
+}
