@@ -29,7 +29,7 @@
   height: 200%;
   background-size: 180px 180px;
   background-repeat: repeat;
-  opacity: .08;
+  opacity: 0.045;
   transform: rotate(-25deg);
   pointer-events: none;
   z-index: 0;
@@ -41,8 +41,7 @@
 }
 
 .hero-tagline,
-.hero-subtitle,
-.college-filters {
+.hero-subtitle {
   position: relative;
   z-index: 1;
 }
@@ -70,42 +69,6 @@
 @keyframes fadeUp {
   from { opacity: 0; transform: translateY(18px); }
   to   { opacity: 1; transform: translateY(0); }
-}
-
-/* ---- college quick-filters ---- */
-.college-filters {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 12px;
-  margin-top: 34px;
-  animation: fadeUp 0.6s 0.45s ease both;
-}
-
-.college-chip {
-  background: #fff;
-  border: 1.5px solid #ddd;
-  border-radius: 24px;
-  padding: 9px 22px;
-  font-family: 'Nunito', sans-serif;
-  font-size: 1rem;
-  font-weight: 700;
-  color: #555;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.college-chip:hover {
-  border-color: #d6394c;
-  color: #d6394c;
-  background: #fef0f0;
-}
-
-.college-chip:active,
-.college-chip.active {
-  background: #d6394c;
-  border-color: #d6394c;
-  color: #fff;
 }
 
 /* ==============================
@@ -160,114 +123,141 @@
 }
 
 /* ==============================
-   TRENDING CAROUSEL
+   GOAT LEADERBOARD
    ============================== */
-.carousel-controls {
+.goat-college-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+  margin-bottom: 28px;
 }
 
-.carousel-btn {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  border: 1.5px solid #ddd;
+.goat-tab {
   background: #fff;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
+  border: 1.5px solid #ddd;
+  border-radius: 20px;
+  padding: 8px 20px;
+  font-family: 'Nunito', sans-serif;
+  font-size: 0.88rem;
+  font-weight: 700;
   color: #555;
+  cursor: pointer;
   transition: all 0.2s;
 }
 
-.carousel-btn:hover {
+.goat-tab:hover {
   border-color: #d6394c;
   color: #d6394c;
 }
 
-.carousel-btn svg {
-  width: 16px;
-  height: 16px;
+.goat-tab.active {
+  background: #d6394c;
+  border-color: #d6394c;
+  color: #fff;
 }
 
-.carousel {
-  display: flex;
-  gap: 20px;
-  overflow-x: auto;
-  scroll-snap-type: x mandatory;
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-  padding-bottom: 8px;
-}
-
-.carousel::-webkit-scrollbar {
-  display: none;
-}
-
-.prof-card {
-  flex: 0 0 220px;
-  scroll-snap-align: start;
+.goat-leaderboard {
   background: #fff;
-  border-radius: 14px;
-  padding: 28px 22px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
+  border-radius: 16px;
+  overflow: hidden;
   box-shadow: 0 2px 12px rgba(0,0,0,0.06);
-  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.goat-header-row {
+  display: grid;
+  grid-template-columns: 60px 2fr 1.5fr 1.5fr 0.8fr;
+  align-items: center;
+  padding: 14px 24px;
+  background: #f0f0f0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: #999;
+}
+
+.goat-row {
+  display: grid;
+  grid-template-columns: 60px 2fr 1.5fr 1.5fr 0.8fr;
+  align-items: center;
+  padding: 16px 24px;
+  border-bottom: 1px solid #f0f0f0;
+  transition: background 0.15s;
   cursor: pointer;
 }
 
-.prof-card:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+.goat-row:last-child {
+  border-bottom: none;
 }
 
-.prof-avatar {
-  width: 56px;
-  height: 56px;
+.goat-row:hover {
+  background: #fef8f8;
+}
+
+.goat-top3 {
+  background: #fffaf5;
+}
+
+.goat-top3:hover {
+  background: #fff3ea;
+}
+
+.goat-col-rank {
+  font-size: 1.1rem;
+  font-weight: 900;
+  color: #888;
+}
+
+.goat-top3 .goat-col-rank {
+  font-size: 1.3rem;
+}
+
+.goat-col-name {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.goat-avatar {
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   background: #d6394c;
   color: #fff;
-  font-size: 1.4rem;
+  font-size: 1rem;
   font-weight: 900;
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-bottom: 14px;
+  flex-shrink: 0;
 }
 
-.prof-name {
-  font-size: 0.95rem;
+.goat-name-text {
   font-weight: 900;
-  margin-bottom: 4px;
+  font-size: 0.92rem;
 }
 
-.prof-dept {
-  font-size: 0.78rem;
+.goat-col-dept {
+  font-size: 0.82rem;
   color: #888;
-  margin-bottom: 12px;
 }
 
-.prof-rating {
+.goat-col-rating {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
+  gap: 8px;
 }
 
-.prof-score {
-  font-size: 0.9rem;
+.goat-score {
   font-weight: 900;
+  font-size: 0.95rem;
   color: #d6394c;
 }
 
-.prof-reviews {
-  font-size: 0.75rem;
-  color: #aaa;
+.goat-col-reviews {
+  font-size: 0.85rem;
+  color: #888;
+  font-weight: 700;
 }
 
 /* ---- stars ---- */
@@ -363,50 +353,59 @@
   color: #999;
 }
 
-.dark .college-chip {
+.dark .goat-tab {
   background: #2a2a2a;
   border-color: #444;
   color: #ccc;
 }
 
-.dark .college-chip:hover {
+.dark .goat-tab:hover {
   border-color: #d6394c;
   color: #d6394c;
-  background: #3a2020;
 }
 
-.dark .college-chip:active,
-.dark .college-chip.active {
+.dark .goat-tab.active {
   background: #d6394c;
+  border-color: #d6394c;
   color: #fff;
 }
 
-.dark .prof-card {
+.dark .goat-leaderboard {
   background: #242424;
   box-shadow: 0 2px 12px rgba(0,0,0,0.2);
 }
 
-.dark .prof-card:hover {
-  box-shadow: 0 8px 24px rgba(0,0,0,0.3);
-}
-
-.dark .prof-dept {
-  color: #999;
-}
-
-.dark .prof-reviews {
+.dark .goat-header-row {
+  background: #2a2a2a;
   color: #777;
 }
 
-.dark .carousel-btn {
-  background: #2a2a2a;
-  border-color: #444;
-  color: #ccc;
+.dark .goat-row {
+  border-bottom-color: #333;
 }
 
-.dark .carousel-btn:hover {
-  border-color: #d6394c;
-  color: #d6394c;
+.dark .goat-row:hover {
+  background: #2e2020;
+}
+
+.dark .goat-top3 {
+  background: #2a2218;
+}
+
+.dark .goat-top3:hover {
+  background: #332818;
+}
+
+.dark .goat-col-rank {
+  color: #777;
+}
+
+.dark .goat-col-dept {
+  color: #999;
+}
+
+.dark .goat-col-reviews {
+  color: #777;
 }
 
 .dark .reviews-section {
@@ -445,11 +444,6 @@
     font-size: 1rem;
   }
 
-  .college-chip {
-    font-size: 0.85rem;
-    padding: 7px 14px;
-  }
-
   .stats-banner {
     flex-wrap: wrap;
     gap: 24px 40px;
@@ -466,5 +460,29 @@
 
   .reviews-grid {
     grid-template-columns: 1fr;
+  }
+
+  .goat-header-row,
+  .goat-row {
+    grid-template-columns: 40px 2fr 1.2fr 0.6fr;
+  }
+
+  .goat-col-dept {
+    display: none;
+  }
+
+  .goat-college-tabs {
+    gap: 6px;
+  }
+
+  .goat-tab {
+    padding: 6px 14px;
+    font-size: 0.78rem;
+  }
+
+  .goat-avatar {
+    width: 32px;
+    height: 32px;
+    font-size: 0.85rem;
   }
 }

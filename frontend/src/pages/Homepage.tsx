@@ -1,10 +1,10 @@
-import { useRef } from 'react';
+import { useState } from 'react';
 import Navbar from '../components/Navbar';
 import SearchBar from '../components/SearchBar';
 import Footer from '../components/Footer';
 import FeedbackTab from '../components/FeedbackTab';
 import ThemeToggle from '../components/ThemeToggle';
-import { stats, colleges, trendingProfessors, recentReviews } from '../mock/MockData';
+import { stats, colleges, goatProfessors, recentReviews } from '../mock/MockData';
 import neuIcon from '../assets/neu-circle-icon.png';
 import './Homepage.css';
 
@@ -18,17 +18,8 @@ const Stars = ({ rating }: { rating: number }) => (
 );
 
 const Homepage = () => {
-  const carouselRef = useRef<HTMLDivElement>(null);
-
-  const scroll = (dir: 'left' | 'right') => {
-    if (carouselRef.current) {
-      const amount = 300;
-      carouselRef.current.scrollBy({
-        left: dir === 'left' ? -amount : amount,
-        behavior: 'smooth',
-      });
-    }
-  };
+  const [selectedCollege, setSelectedCollege] = useState(colleges[0]);
+  const profs = goatProfessors[selectedCollege] || [];
 
   return (
     <div className="homepage">
@@ -48,13 +39,6 @@ const Homepage = () => {
         </p>
 
         <SearchBar />
-
-        {/* College quick-filters */}
-        <div className="college-filters">
-          {colleges.map((c) => (
-            <button key={c} className="college-chip">{c}</button>
-          ))}
-        </div>
       </main>
 
       {/* ======== Stats Banner ======== */}
@@ -67,31 +51,51 @@ const Homepage = () => {
         ))}
       </section>
 
-      {/* ======== Trending Professors ======== */}
-      <section className="section trending-section">
+      {/* ======== GOAT Professors Leaderboard ======== */}
+      <section className="section goat-section">
         <div className="section-header">
-          <h2 className="section-title">Trending Professors</h2>
-          <div className="carousel-controls">
-            <button className="carousel-btn" onClick={() => scroll('left')}>
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
-            </button>
-            <button className="carousel-btn" onClick={() => scroll('right')}>
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 6 15 12 9 18" /></svg>
-            </button>
-          </div>
+          <h2 className="section-title">🐐 GOAT Professors</h2>
         </div>
 
-        <div className="carousel" ref={carouselRef}>
-          {trendingProfessors.map((p) => (
-            <div key={p.name} className="prof-card">
-              <div className="prof-avatar">{p.name.charAt(0)}</div>
-              <h3 className="prof-name">{p.name}</h3>
-              <p className="prof-dept">{p.dept}</p>
-              <div className="prof-rating">
-                <Stars rating={p.rating} />
-                <span className="prof-score">{p.rating}</span>
+        <div className="goat-college-tabs">
+          {colleges.map((c) => (
+            <button
+              key={c}
+              className={`goat-tab ${c === selectedCollege ? 'active' : ''}`}
+              onClick={() => setSelectedCollege(c)}
+            >
+              {c}
+            </button>
+          ))}
+        </div>
+
+        <div className="goat-leaderboard">
+          <div className="goat-header-row">
+            <span className="goat-col-rank">#</span>
+            <span className="goat-col-name">Professor</span>
+            <span className="goat-col-dept">Department</span>
+            <span className="goat-col-rating">Rating</span>
+            <span className="goat-col-reviews">Reviews</span>
+          </div>
+
+          {profs.map((p, i) => (
+            <div
+              key={p.name}
+              className={`goat-row ${i < 3 ? 'goat-top3' : ''}`}
+            >
+              <span className="goat-col-rank">
+                {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1}
+              </span>
+              <div className="goat-col-name">
+                <div className="goat-avatar">{p.name.charAt(0)}</div>
+                <span className="goat-name-text">{p.name}</span>
               </div>
-              <p className="prof-reviews">{p.reviews} reviews</p>
+              <span className="goat-col-dept">{p.dept}</span>
+              <span className="goat-col-rating">
+                <Stars rating={p.rating} />
+                <span className="goat-score">{p.rating.toFixed(2)}</span>
+              </span>
+              <span className="goat-col-reviews">{p.reviews}</span>
             </div>
           ))}
         </div>
