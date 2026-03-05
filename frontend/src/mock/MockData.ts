@@ -1,8 +1,8 @@
 export const stats = [
-  { label: 'Professors', value: '2,500+' },
+  { label: 'Professors', value: '3,800+' },
   { label: 'Ratings', value: '10,000+' },
-  { label: 'Courses', value: '5,200+' },
-  { label: 'Departments', value: '80+' },
+  { label: 'Comments', value: '5,200+' },
+  { label: 'Courses', value: '80+' },
 ];
 
 export const colleges = [
