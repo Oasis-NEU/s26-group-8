@@ -311,7 +311,7 @@ def stats():
 @app.route("/api/colleges")
 def colleges():
     counts = rmp_profs["college"].value_counts()
-    college_list = [c for c, n in counts.items() if n >= 5]
+    college_list = sorted([c for c, n in counts.items() if n >= 5 and c != "Other"])
     return jsonify(college_list)
 
 
@@ -320,6 +320,11 @@ def goat_professors():
     college     = request.args.get("college", "Khoury")
     limit       = int(request.args.get("limit", "10"))
     min_reviews = int(request.args.get("min_reviews", "10"))
+
+    # Small colleges get no minimum review requirement
+    NO_MIN_COLLEGES = {"Law", "Professional Studies"}
+    if college in NO_MIN_COLLEGES:
+        min_reviews = 0
 
     subset = rmp_profs[rmp_profs["college"] == college].copy()
     subset = subset[
