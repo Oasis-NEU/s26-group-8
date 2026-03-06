@@ -22,9 +22,7 @@ __author__ = "Benjamin"
 __version__ = "1.0.0"
 
 import csv
-import json
 import os
-import time
 import argparse
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timezone
@@ -153,7 +151,7 @@ def scrape_trace(cookie: str, rpp: int = 500) -> List[Dict[str, Any]]:
                 print(f"\n  ✗ Page {page_num} failed: {e}")
 
     pbar.close()
-    requests.session.close()
+    session.close()
     return all_courses
 
 

@@ -2,11 +2,11 @@
 Backend API server for NEU Professor Ratings.
 Place this file in: backend/server.py
 
-Install deps:  pip install flask flask-cors pandas
+Install deps:  pip install flask flask-cors pandas numpy
 Run:           python backend/server.py
 """
 
-import os, math
+import os
 import numpy as np
 import pandas as pd
 from flask import Flask, jsonify, request
