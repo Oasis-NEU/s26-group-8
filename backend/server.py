@@ -335,7 +335,7 @@ trace_reviews_lookup = dict(zip(trace_review_counts["_full"], trace_review_count
 print(f"[startup] Computed TRACE review counts for {len(trace_reviews_lookup)} instructors")
 
 # ──────────────────────────────────────────────
-#  Attach TRACE overall + blended rating + combined reviews to rmp_profs
+#  Attach TRACE overall + avg rating + combined reviews to rmp_profs
 # ──────────────────────────────────────────────
 #  RMP rating is on a 1-5 scale.  TRACE mean is also 1-5.
 #  Blended = average of both when TRACE is available,
@@ -348,7 +348,7 @@ rmp_profs["trace_reviews"] = rmp_profs["_name_key"].map(trace_reviews_lookup).fi
 rmp_profs["trace_dept"] = rmp_profs["_name_key"].map(trace_dept_lookup)
 rmp_profs["total_reviews"] = rmp_profs["num_ratings"].astype(int) + rmp_profs["trace_reviews"]
 
-def compute_blended(r):
+def compute_avg_rating(r):
     has_rmp = r["num_ratings"] > 0 and r["rating"] > 0
     has_trace = pd.notna(r["trace_overall"]) and r["trace_reviews"] > 0
 
@@ -361,7 +361,7 @@ def compute_blended(r):
     else:
         return 0.0
 
-rmp_profs["blended_rating"] = rmp_profs.apply(compute_blended, axis=1)
+rmp_profs["avg_rating"] = rmp_profs.apply(compute_avg_rating, axis=1)
 
 has_trace = rmp_profs["trace_overall"].notna().sum()
 print(f"[startup] {has_trace}/{len(rmp_profs)} RMP professors matched to TRACE data")
@@ -433,9 +433,9 @@ def goat_professors():
             (subset["trace_overall"].notna())
         ]
 
-    # Sort by blended_rating desc, then total_reviews desc as tiebreak
+    # Sort by avg_rating desc, then total_reviews desc as tiebreak
     subset = subset.sort_values(
-        ["blended_rating", "total_reviews"], ascending=[False, False]
+        ["avg_rating", "total_reviews"], ascending=[False, False]
     )
     top = subset.head(limit)
 
@@ -448,7 +448,7 @@ def goat_professors():
             "dept":           row["trace_dept"] if pd.notna(row["trace_dept"]) else row["department"],
             "rmpRating":      round(float(row["rating"]), 2) if has_rmp else None,
             "traceRating":    round(float(row["trace_overall"]), 2) if has_trace else None,
-            "blendedRating":  round(float(row["blended_rating"]), 2),
+            "avgRating":  round(float(row["avg_rating"]), 2),
             "rmpReviews":     int(row["num_ratings"]),
             "traceReviews":   int(row["trace_reviews"]),
             "totalReviews":   int(row["total_reviews"]),
@@ -469,7 +469,7 @@ def random_professor():
         "dept":          row["trace_dept"] if pd.notna(row["trace_dept"]) else row["department"],
         "rmpRating":     round(float(row["rating"]), 2) if has_rmp else None,
         "traceRating":   round(float(row["trace_overall"]), 2) if has_trace else None,
-        "blendedRating": round(float(row["blended_rating"]), 2),
+        "avgRating": round(float(row["avg_rating"]), 2),
         "rmpReviews":    int(row["num_ratings"]),
         "traceReviews":  int(row["trace_reviews"]),
         "totalReviews":  int(row["total_reviews"]),
@@ -481,18 +481,39 @@ def random_professor():
 # ──────────────────────────────────────────────
 #  Precompute search indexes for autocomplete
 # ──────────────────────────────────────────────
-# Professors: unique names with their dept and blended rating
-prof_search = (
-    rmp_profs[["name", "department", "trace_dept", "blended_rating", "total_reviews", "college"]]
-    .copy()
-)
-prof_search["_name_lower"] = prof_search["name"].astype(str).str.strip().str.lower()
+# Professors: merge RMP + TRACE so all instructors are searchable
+
+# RMP professors (already have avg_rating, trace_dept, etc.)
+rmp_for_search = rmp_profs[["name", "trace_dept", "avg_rating", "total_reviews"]].copy()
+rmp_for_search["_name_lower"] = rmp_for_search["name"].astype(str).str.strip().str.lower()
+rmp_for_search["dept_display"] = rmp_for_search["trace_dept"]  # only TRACE dept
+
+# TRACE-only professors (not in RMP)
+trace_unique = trace_courses[["_full", "departmentName"]].drop_duplicates(subset=["_full"])
+trace_unique = trace_unique.rename(columns={"_full": "_name_lower", "departmentName": "dept_display"})
+# Exclude those already in RMP
+rmp_names = set(rmp_for_search["_name_lower"])
+trace_only = trace_unique[~trace_unique["_name_lower"].isin(rmp_names)].copy()
+
+# Build proper name (title case) from the lowercase key
+trace_only["name"] = trace_only["_name_lower"].str.title()
+trace_only["avg_rating"] = 0.0  # no rating data
+trace_only["total_reviews"] = 0
+
+# Combine
+prof_search = pd.concat([
+    rmp_for_search[["name", "_name_lower", "dept_display", "avg_rating", "total_reviews"]],
+    trace_only[["name", "_name_lower", "dept_display", "avg_rating", "total_reviews"]],
+], ignore_index=True)
+
+# Drop any without a TRACE department
+prof_search = prof_search[prof_search["dept_display"].notna()]
+
 # Split into individual name parts for whole-word matching
 prof_search["_name_parts"] = prof_search["_name_lower"].str.split()
-prof_search["dept_display"] = prof_search.apply(
-    lambda r: r["trace_dept"] if pd.notna(r["trace_dept"]) else r["department"], axis=1
-)
 prof_search = prof_search.drop_duplicates(subset=["_name_lower"])
+
+print(f"[search] Indexed {len(prof_search)} professors ({len(rmp_for_search)} RMP + {len(trace_only)} TRACE-only)")
 
 # Courses: unique course codes with their name
 # displayName format: "ACCT6228:02 (Contmp Issues Accountng Theory) - Michael Rezuke"
@@ -559,7 +580,7 @@ def search():
                 "type":   "professor",
                 "name":   r["name"],
                 "dept":   r["dept_display"],
-                "rating": round(float(r["blended_rating"]), 2) if r["blended_rating"] > 0 else None,
+                "rating": round(float(r["avg_rating"]), 2) if r["avg_rating"] > 0 else None,
             })
         return jsonify(results)
 

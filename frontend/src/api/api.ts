@@ -11,7 +11,7 @@ export interface Professor {
   dept: string;
   rmpRating: number | null;
   traceRating: number | null;
-  blendedRating: number;
+  avgRating: number;
   rmpReviews: number;
   traceReviews: number;
   totalReviews: number;

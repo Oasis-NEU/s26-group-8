@@ -47,8 +47,8 @@ const RatingCell = ({ prof, isOpen, onToggle }: {
       className="goat-col-rating goat-rating-wrapper"
       onClick={onToggle}
     >
-      <Stars rating={prof.blendedRating} />
-      <span className="goat-score">{prof.blendedRating.toFixed(2)}</span>
+      <Stars rating={prof.avgRating} />
+      <span className="goat-score">{prof.avgRating.toFixed(2)}</span>
       <span className="goat-rating-hint">ⓘ</span>
 
       {isOpen && (
@@ -67,8 +67,8 @@ const RatingCell = ({ prof, isOpen, onToggle }: {
           </div>
           <div className="tooltip-divider" />
           <div className="tooltip-row">
-            <span className="tooltip-label">Blended</span>
-            <span className="tooltip-value tooltip-blended">{prof.blendedRating.toFixed(2)}</span>
+            <span className="tooltip-label">Avg Rating</span>
+            <span className="tooltip-value tooltip-blended">{prof.avgRating.toFixed(2)}</span>
           </div>
         </div>
       )}
@@ -187,7 +187,7 @@ const Homepage = () => {
       {/* ======== GOAT Professors Leaderboard ======== */}
       <section className="section goat-section">
         <div className="section-header">
-          <h2 className="section-title">🐐 GOAT Professors</h2>
+          <h2 className="section-title">GOATED Professors</h2>
         </div>
 
         <div className="goat-college-tabs">
