@@ -228,9 +228,28 @@ trace_scores["question"] = trace_scores["question"].astype(str)
 overall_scores = trace_scores[
     trace_scores["question"].str.lower().str.contains("overall", na=False)
 ].copy()
-overall_scores["mean"] = pd.to_numeric(overall_scores["mean"], errors="coerce")
-overall_scores["completed"] = pd.to_numeric(overall_scores["completed"], errors="coerce")
-overall_scores.dropna(subset=["mean", "completed"], inplace=True)
+
+# The stored `mean` column is WRONG in the CSV — compute it from count_1..count_5
+for col in ["count_1", "count_2", "count_3", "count_4", "count_5", "completed"]:
+    overall_scores[col] = pd.to_numeric(overall_scores[col], errors="coerce").fillna(0).astype(int)
+
+overall_scores["_total_responses"] = (
+    overall_scores["count_1"] + overall_scores["count_2"] +
+    overall_scores["count_3"] + overall_scores["count_4"] +
+    overall_scores["count_5"]
+)
+overall_scores["_weighted_sum"] = (
+    1 * overall_scores["count_1"] + 2 * overall_scores["count_2"] +
+    3 * overall_scores["count_3"] + 4 * overall_scores["count_4"] +
+    5 * overall_scores["count_5"]
+)
+# Avoid division by zero
+overall_scores["mean"] = overall_scores.apply(
+    lambda r: r["_weighted_sum"] / r["_total_responses"]
+              if r["_total_responses"] > 0 else np.nan,
+    axis=1,
+)
+overall_scores.dropna(subset=["mean"], inplace=True)
 
 # Map courseId+instructorId → overall mean scores
 # First get the set of (courseId, instructorId) per full name from trace_courses
@@ -247,10 +266,10 @@ merged = overall_scores.merge(
 )
 
 # Weighted average per instructor name:
-#   weight = completed (number of students who responded)
-#   value  = mean (the score for that section)
+#   weight = _total_responses (actual number who answered the question)
+#   value  = mean (computed from count_1..count_5)
 def weighted_avg(group):
-    w = group["completed"]
+    w = group["_total_responses"]
     v = group["mean"]
     total_w = w.sum()
     if total_w == 0:
@@ -351,12 +370,15 @@ print(f"[startup] {has_trace}/{len(rmp_profs)} RMP professors matched to TRACE d
 #  Precompute stats
 # ──────────────────────────────────────────────
 #  Professors  = unique full names from trace_courses
-#  Courses     = unique courseId in trace_courses (each section has its own courseId)
-#  Comments    = rmp_reviews with non-empty comments + trace_comments rows
+#  Courses     = unique course codes from displayName (e.g. ACCT6228, not per-section)
+#  Comments    = rmp_reviews with non-empty comments + trace_comments rows (1 row = 1 comment)
 #  Departments = unique departmentName in trace_courses
 # ──────────────────────────────────────────────
 stat_professor_count = trace_courses["_full"].nunique()
-stat_course_count    = trace_courses["courseId"].nunique()
+
+# Extract course code before the colon: "ACCT6228:02 (Name) - Prof" → "ACCT6228"
+trace_courses["_course_code"] = trace_courses["displayName"].astype(str).str.split(":").str[0]
+stat_course_count = trace_courses["_course_code"].nunique()
 
 # Comments: RMP reviews with a non-empty comment + all trace_comments rows
 rmp_comment_count = int(rmp_reviews["comment"].dropna().astype(str).str.strip().ne("").sum())
@@ -402,8 +424,8 @@ def goat_professors():
 
     subset = rmp_profs[rmp_profs["college"] == college].copy()
     if college in NO_MIN_COLLEGES:
-        # Require at least 3 total reviews across both sources
-        subset = subset[subset["total_reviews"] >= 3]
+        # Require at least 5 total reviews across both sources
+        subset = subset[subset["total_reviews"] >= 4]
     else:
         subset = subset[
             (subset["num_ratings"] >= min_reviews) &
