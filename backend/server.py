@@ -6,11 +6,21 @@ Install deps:  pip install flask flask-cors pandas
 Run:           python backend/server.py
 """
 
-import os, re
+import os, re, unicodedata
 import numpy as np
 import pandas as pd
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+
+
+def normalize_name(name):
+    """Lowercase, strip accents, collapse whitespace."""
+    s = str(name).strip().lower()
+    # Strip accents: María → maria
+    s = unicodedata.normalize('NFKD', s).encode('ascii', 'ignore').decode('ascii')
+    # Collapse whitespace
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
 
 app = Flask(__name__)
 CORS(app)
@@ -216,9 +226,9 @@ rmp_profs["college"] = rmp_profs["department"].apply(get_college)
 # ──────────────────────────────────────────────
 
 # Normalise names for matching
-trace_courses["_first"] = trace_courses["instructorFirstName"].astype(str).str.strip().str.lower()
-trace_courses["_last"]  = trace_courses["instructorLastName"].astype(str).str.strip().str.lower()
-trace_courses["_full"]  = (trace_courses["_first"] + " " + trace_courses["_last"]).str.replace(r'\s+', ' ', regex=True).str.strip()
+trace_courses["_first"] = trace_courses["instructorFirstName"].apply(normalize_name)
+trace_courses["_last"]  = trace_courses["instructorLastName"].apply(normalize_name)
+trace_courses["_full"]  = (trace_courses["_first"] + " " + trace_courses["_last"]).apply(normalize_name)
 
 # Build TRACE department lookup: use the most recent department per instructor
 # (highest termId = most recent term)
@@ -341,14 +351,50 @@ print(f"[startup] Computed TRACE review counts for {len(trace_reviews_lookup)} i
 #  Attach TRACE overall + avg rating + combined reviews to rmp_profs
 # ──────────────────────────────────────────────
 #  RMP rating is on a 1-5 scale.  TRACE mean is also 1-5.
-#  Blended = average of both when TRACE is available,
+#  Avg = average of both when TRACE is available,
 #  otherwise fall back to just RMP.
 #  Total reviews = RMP num_ratings + TRACE completed responses
 # ──────────────────────────────────────────────
-rmp_profs["_name_key"] = rmp_profs["name"].astype(str).str.strip().str.lower().str.replace(r'\s+', ' ', regex=True)
+rmp_profs["_name_key"] = rmp_profs["name"].apply(normalize_name)
+
+# Exact match first
 rmp_profs["trace_overall"] = rmp_profs["_name_key"].map(trace_lookup)
 rmp_profs["trace_reviews"] = rmp_profs["_name_key"].map(trace_reviews_lookup).fillna(0).astype(int)
 rmp_profs["trace_dept"] = rmp_profs["_name_key"].map(trace_dept_lookup)
+
+# Fallback match for unmatched: last name exact + first name prefix
+# e.g. RMP "maria villar" → TRACE "maria elena villar"
+trace_all_names = set(trace_lookup.keys())
+trace_by_last = {}
+for tn in trace_all_names:
+    parts = tn.split()
+    if len(parts) >= 2:
+        last = parts[-1]
+        trace_by_last.setdefault(last, []).append(tn)
+
+unmatched = rmp_profs["trace_overall"].isna()
+for idx in rmp_profs[unmatched].index:
+    rmp_key = rmp_profs.at[idx, "_name_key"]
+    rmp_parts = rmp_key.split()
+    if len(rmp_parts) < 2:
+        continue
+    rmp_first = rmp_parts[0]
+    rmp_last = rmp_parts[-1]
+
+    candidates = trace_by_last.get(rmp_last, [])
+    for tc_name in candidates:
+        tc_first = tc_name.split()[0]
+        # Match if either first name is a prefix of the other
+        if tc_first.startswith(rmp_first) or rmp_first.startswith(tc_first):
+            rmp_profs.at[idx, "trace_overall"] = trace_lookup.get(tc_name)
+            rmp_profs.at[idx, "trace_reviews"] = trace_reviews_lookup.get(tc_name, 0)
+            rmp_profs.at[idx, "trace_dept"] = trace_dept_lookup.get(tc_name)
+            break
+
+fallback_matched = unmatched.sum() - rmp_profs["trace_overall"].isna().sum()
+print(f"[startup] Fallback matched {fallback_matched} additional professors")
+
+rmp_profs["trace_reviews"] = rmp_profs["trace_reviews"].fillna(0).astype(int)
 rmp_profs["total_reviews"] = rmp_profs["num_ratings"].astype(int) + rmp_profs["trace_reviews"]
 
 def compute_avg_rating(r):
@@ -427,8 +473,8 @@ def goat_professors():
 
     subset = rmp_profs[rmp_profs["college"] == college].copy()
     if college in NO_MIN_COLLEGES:
-        # Require at least 3 total reviews across both sources
-        subset = subset[subset["total_reviews"] >= 3]
+        # Require at least 5 total reviews across both sources
+        subset = subset[subset["total_reviews"] >= 5]
     else:
         subset = subset[
             (subset["num_ratings"] >= min_reviews) &
@@ -488,7 +534,7 @@ def random_professor():
 
 # RMP professors (already have avg_rating, trace_dept, etc.)
 rmp_for_search = rmp_profs[["name", "trace_dept", "avg_rating", "total_reviews"]].copy()
-rmp_for_search["_name_lower"] = rmp_for_search["name"].astype(str).str.strip().str.lower().str.replace(r'\s+', ' ', regex=True)
+rmp_for_search["_name_lower"] = rmp_for_search["name"].apply(normalize_name)
 rmp_for_search["dept_display"] = rmp_for_search["trace_dept"]  # only TRACE dept
 
 # TRACE-only professors (not in RMP)
@@ -500,8 +546,9 @@ trace_only = trace_unique[~trace_unique["_name_lower"].isin(rmp_names)].copy()
 
 # Build proper name (title case) from the lowercase key
 trace_only["name"] = trace_only["_name_lower"].str.title()
-trace_only["avg_rating"] = 0.0  # no rating data
-trace_only["total_reviews"] = 0
+# Pull their TRACE rating and review counts from the lookups
+trace_only["avg_rating"] = trace_only["_name_lower"].map(trace_lookup).fillna(0.0)
+trace_only["total_reviews"] = trace_only["_name_lower"].map(trace_reviews_lookup).fillna(0).astype(int)
 
 # Combine
 prof_search = pd.concat([
@@ -546,7 +593,7 @@ print(f"[search] Indexed {len(prof_search)} professors, {len(course_search)} cou
 
 @app.route("/api/search")
 def search():
-    q = request.args.get("q", "").strip().lower()
+    q = normalize_name(request.args.get("q", ""))
     search_type = request.args.get("type", "Professor")
     limit = int(request.args.get("limit", "3"))
 
