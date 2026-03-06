@@ -126,10 +126,39 @@
    GOAT LEADERBOARD
    ============================== */
 .goat-college-tabs {
+  position: relative;
   display: flex;
-  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 28px;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  padding-bottom: 6px;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 10%, #000 85%, transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0%, #000 10%, #000 85%, transparent 100%);
+}
+
+.goat-college-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+/* At start — only fade right */
+.goat-college-tabs.scrolled-start {
+  -webkit-mask-image: linear-gradient(to right, #000 85%, transparent 100%);
+  mask-image: linear-gradient(to right, #000 85%, transparent 100%);
+}
+
+/* At end — only fade left */
+.goat-college-tabs.scrolled-end {
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 15%);
+  mask-image: linear-gradient(to right, transparent 0%, #000 15%);
+}
+
+/* At both ends — no fade needed */
+.goat-college-tabs.scrolled-start.scrolled-end {
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 
 .goat-tab {
@@ -143,6 +172,8 @@
   color: #555;
   cursor: pointer;
   transition: all 0.2s;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .goat-tab:hover {
@@ -159,16 +190,46 @@
 .goat-leaderboard {
   background: #fff;
   border-radius: 16px;
-  overflow: hidden;
+  overflow: visible;
   box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+  position: relative;
+  transition: opacity 0.2s;
+  min-height: 608px; /* header (48px) + 10 rows (56px each) */
+}
+
+.goat-leaderboard.goat-loading .goat-row {
+  opacity: 0.35;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.goat-leaderboard.goat-loading::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(214, 57, 76, 0.2);
+  border-top-color: #d6394c;
+  border-radius: 50%;
+  animation: goatSpin 0.6s linear infinite;
+  z-index: 10;
+}
+
+@keyframes goatSpin {
+  to { transform: translate(-50%, -50%) rotate(360deg); }
 }
 
 .goat-header-row {
   display: grid;
   grid-template-columns: 60px 2fr 1.5fr 1.5fr 0.8fr;
   align-items: center;
-  padding: 14px 24px;
+  padding: 0 24px;
+  height: 48px;
   background: #f0f0f0;
+  border-radius: 16px 16px 0 0;
   font-size: 0.72rem;
   font-weight: 700;
   text-transform: uppercase;
@@ -180,7 +241,8 @@
   display: grid;
   grid-template-columns: 60px 2fr 1.5fr 1.5fr 0.8fr;
   align-items: center;
-  padding: 16px 24px;
+  padding: 0 24px;
+  height: 56px;
   border-bottom: 1px solid #f0f0f0;
   transition: background 0.15s;
   cursor: pointer;
@@ -206,6 +268,10 @@
   font-size: 1.1rem;
   font-weight: 900;
   color: #888;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .goat-top3 .goat-col-rank {
@@ -215,21 +281,6 @@
 .goat-col-name {
   display: flex;
   align-items: center;
-  gap: 12px;
-}
-
-.goat-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: #d6394c;
-  color: #fff;
-  font-size: 1rem;
-  font-weight: 900;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
 }
 
 .goat-name-text {
@@ -245,7 +296,8 @@
 .goat-col-rating {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  padding-right: 24px;
 }
 
 .goat-score {
@@ -258,21 +310,115 @@
   font-size: 0.85rem;
   color: #888;
   font-weight: 700;
+  padding-left: 8px;
 }
 
-/* ---- stars ---- */
-.stars {
-  display: flex;
-  gap: 1px;
-}
-
-.star {
+/* ---- partial stars ---- */
+.stars-wrapper {
+  position: relative;
+  display: inline-block;
   font-size: 0.9rem;
-  color: #ddd;
+  line-height: 1;
+  white-space: nowrap;
 }
 
-.star.filled {
+.stars-empty {
+  color: #ddd;
+  letter-spacing: 1px;
+}
+
+.stars-filled {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: hidden;
   color: #f5a623;
+  letter-spacing: 1px;
+  white-space: nowrap;
+}
+
+/* ==============================
+   RATING TOOLTIP
+   ============================== */
+.goat-rating-wrapper {
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+}
+
+.goat-rating-hint {
+  font-size: 0.7rem;
+  opacity: 0.35;
+  margin-left: 0;
+  transition: opacity 0.15s;
+}
+
+.goat-rating-wrapper:hover .goat-rating-hint {
+  opacity: 0.8;
+}
+
+.goat-rating-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 10px;
+  padding: 12px 16px;
+  min-width: 160px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  animation: tooltipFadeIn 0.15s ease-out;
+  pointer-events: auto;
+}
+
+.goat-rating-tooltip::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%) rotate(45deg);
+  width: 10px;
+  height: 10px;
+  background: #fff;
+  border-left: 1px solid #e0e0e0;
+  border-top: 1px solid #e0e0e0;
+}
+
+@keyframes tooltipFadeIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(4px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+.tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 0;
+  font-size: 0.85rem;
+}
+
+.tooltip-label {
+  color: #888;
+  font-weight: 500;
+}
+
+.tooltip-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: #333;
+}
+
+.tooltip-blended {
+  color: #d6394c;
+  font-weight: 800;
+}
+
+.tooltip-divider {
+  height: 1px;
+  background: #e8e8e8;
+  margin: 6px 0;
 }
 
 /* ==============================
@@ -326,6 +472,12 @@
 
 .randomizer-btn:active {
   transform: scale(0.97);
+}
+
+.randomizer-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .randomizer-btn svg {
@@ -390,6 +542,11 @@
   box-shadow: 0 2px 12px rgba(0,0,0,0.2);
 }
 
+.dark .goat-leaderboard.goat-loading::after {
+  border-color: rgba(214, 57, 76, 0.15);
+  border-top-color: #d6394c;
+}
+
 .dark .goat-header-row {
   background: #2a2a2a;
   color: #777;
@@ -431,12 +588,37 @@
   color: #999;
 }
 
-.dark .star {
+.dark .stars-empty {
   color: #444;
 }
 
+/* ---- dark tooltip ---- */
+.dark .goat-rating-tooltip {
+  background: #2a2a2a;
+  border-color: #444;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.dark .goat-rating-tooltip::before {
+  background: #2a2a2a;
+  border-left-color: #444;
+  border-top-color: #444;
+}
+
+.dark .tooltip-label {
+  color: #999;
+}
+
+.dark .tooltip-value {
+  color: #e0e0e0;
+}
+
+.dark .tooltip-divider {
+  background: #444;
+}
+
 /* ==============================
-   RESPONSIVE — TABLET
+   RESPONSIVE — TABLET (≤ 768px)
    ============================== */
 @media (max-width: 768px) {
   .homepage-hero {
@@ -486,40 +668,26 @@
     font-size: 4rem;
   }
 
-  .goat-header-row,
-  .goat-row {
-    grid-template-columns: 40px 2fr 1.2fr 0.6fr;
-    padding: 12px 16px;
+  /* Horizontal scroll for the leaderboard — all columns stay visible */
+  .goat-leaderboard {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
-  .goat-col-dept {
-    display: none;
+  .goat-header-row,
+  .goat-row {
+    min-width: 600px;
+    padding: 0 16px;
+    height: 50px;
   }
 
   .goat-college-tabs {
     gap: 6px;
-    overflow-x: auto;
-    flex-wrap: nowrap;
-    padding-bottom: 6px;
-    -ms-overflow-style: none;
-    scrollbar-width: none;
-  }
-
-  .goat-college-tabs::-webkit-scrollbar {
-    display: none;
   }
 
   .goat-tab {
     padding: 6px 14px;
     font-size: 0.78rem;
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-
-  .goat-avatar {
-    width: 32px;
-    height: 32px;
-    font-size: 0.85rem;
   }
 
   .goat-name-text {
@@ -529,10 +697,25 @@
   .goat-score {
     font-size: 0.82rem;
   }
+
+  /* Tooltip nudge — keep it on-screen */
+  .goat-rating-tooltip {
+    min-width: 140px;
+    padding: 10px 14px;
+    left: auto;
+    right: 0;
+    transform: none;
+  }
+
+  .goat-rating-tooltip::before {
+    left: auto;
+    right: 20px;
+    transform: rotate(45deg);
+  }
 }
 
 /* ==============================
-   RESPONSIVE — SMALL PHONE
+   RESPONSIVE — SMALL PHONE (≤ 480px)
    ============================== */
 @media (max-width: 480px) {
   .homepage-hero {
@@ -549,6 +732,8 @@
   }
 
   .stats-banner {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     gap: 18px 28px;
     padding: 28px 16px;
   }
@@ -571,19 +756,9 @@
 
   .goat-header-row,
   .goat-row {
-    grid-template-columns: 32px 1fr 0.6fr;
-    padding: 10px 12px;
-    gap: 8px;
-  }
-
-  .goat-col-reviews {
-    display: none;
-  }
-
-  .goat-avatar {
-    width: 28px;
-    height: 28px;
-    font-size: 0.75rem;
+    min-width: 560px;
+    padding: 0 12px;
+    height: 48px;
   }
 
   .goat-name-text {
@@ -596,6 +771,14 @@
 
   .goat-top3 .goat-col-rank {
     font-size: 1.1rem;
+  }
+
+  .goat-col-dept {
+    font-size: 0.72rem;
+  }
+
+  .goat-col-reviews {
+    font-size: 0.75rem;
   }
 
   .randomizer-desc {
@@ -611,11 +794,27 @@
     font-size: 3.5rem;
   }
 
-  .stars {
-    gap: 0;
+  .stars-wrapper {
+    font-size: 0.78rem;
   }
 
-  .star {
-    font-size: 0.78rem;
+  .goat-score {
+    font-size: 0.8rem;
+  }
+
+  /* Tooltip: anchor to left edge on tiny screens */
+  .goat-rating-tooltip {
+    min-width: 130px;
+    padding: 10px 12px;
+    left: 0;
+    right: auto;
+    transform: none;
+    font-size: 0.8rem;
+  }
+
+  .goat-rating-tooltip::before {
+    left: 16px;
+    right: auto;
+    transform: rotate(45deg);
   }
 }

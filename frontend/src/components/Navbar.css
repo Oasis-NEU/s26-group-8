@@ -8,7 +8,10 @@
   align-items: center;
   justify-content: space-between;
   padding: 12px 28px;
-  background: transparent;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
   font-family: 'Nunito', sans-serif;
 }
 
@@ -109,6 +112,11 @@
 }
 
 /* ---------- dark theme ---------- */
+.dark .navbar {
+  background: rgba(26, 26, 26, 0.85);
+  border-bottom-color: rgba(255, 255, 255, 0.06);
+}
+
 .dark .navbar-logo {
   color: #e0e0e0;
 }

@@ -68,11 +68,6 @@ const Dropdown = ({ options, value, onChange, placeholder, className = '' }: Dro
               onClick={() => handleSelect(opt.value)}
               style={{ animationDelay: `${i * 0.04}s` }}
             >
-              {opt.value === value && (
-                <svg className="dropdown-check" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-              )}
               {opt.label}
             </li>
           ))}

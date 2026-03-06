@@ -69,7 +69,89 @@
   color: #aaa;
 }
 
-/* ---------- dark theme ---------- */
+/* ==============================
+   AUTOCOMPLETE SUGGESTIONS
+   ============================== */
+.search-suggestions {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 16px;
+  padding: 6px 0;
+  list-style: none;
+  margin: 0;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.04);
+  z-index: 200;
+  animation: suggestionsIn 0.15s ease-out;
+  overflow: hidden;
+}
+
+@keyframes suggestionsIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.suggestion-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  cursor: pointer;
+  transition: background 0.12s;
+  gap: 12px;
+}
+
+.suggestion-item:hover,
+.suggestion-item.active {
+  background: #fef0f0;
+}
+
+.suggestion-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.suggestion-name {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.suggestion-code {
+  color: #d6394c;
+  font-weight: 800;
+  font-size: 0.88rem;
+}
+
+.suggestion-dept {
+  font-size: 0.78rem;
+  color: #999;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.suggestion-rating {
+  flex-shrink: 0;
+  font-weight: 800;
+  font-size: 0.9rem;
+  color: #d6394c;
+  background: #fef0f0;
+  padding: 4px 10px;
+  border-radius: 8px;
+}
+
+/* ==============================
+   DARK THEME
+   ============================== */
 .dark .search-bar {
   background: #2a2a2a;
   border-color: #444;
@@ -103,6 +185,29 @@
   color: #666;
 }
 
+.dark .search-suggestions {
+  background: #2a2a2a;
+  border-color: #444;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.dark .suggestion-item:hover,
+.dark .suggestion-item.active {
+  background: #3a2020;
+}
+
+.dark .suggestion-name {
+  color: #e0e0e0;
+}
+
+.dark .suggestion-dept {
+  color: #777;
+}
+
+.dark .suggestion-rating {
+  background: #3a2020;
+}
+
 /* ==============================
    MOBILE
    ============================== */
@@ -132,5 +237,26 @@
 
   .search-divider {
     height: 24px;
+  }
+
+  .search-suggestions {
+    border-radius: 12px;
+  }
+
+  .suggestion-item {
+    padding: 10px 16px;
+  }
+
+  .suggestion-name {
+    font-size: 0.88rem;
+  }
+
+  .suggestion-dept {
+    font-size: 0.72rem;
+  }
+
+  .suggestion-rating {
+    font-size: 0.82rem;
+    padding: 3px 8px;
   }
 }

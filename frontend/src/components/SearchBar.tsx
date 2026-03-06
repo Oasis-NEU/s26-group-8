@@ -1,5 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Dropdown from './Dropdown';
+import { fetchSearchSuggestions } from '../api/api';
+import type { SearchSuggestion } from '../api/api';
 import './SearchBar.css';
 
 const searchOptions = [
@@ -9,21 +11,110 @@ const searchOptions = [
 
 const SearchBar = () => {
   const [searchType, setSearchType] = useState('Professor');
+  const [query, setQuery] = useState('');
+  const [suggestions, setSuggestions] = useState<SearchSuggestion[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const placeholderText =
     searchType === 'Professor'
       ? 'Search by professor name...'
       : 'Search by course name or code...';
 
+  // Debounced fetch
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    if (query.trim().length < 2) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const results = await fetchSearchSuggestions(query, searchType);
+        setSuggestions(results);
+        setShowSuggestions(results.length > 0);
+        setActiveIndex(-1);
+      } catch {
+        setSuggestions([]);
+        setShowSuggestions(false);
+      }
+    }, 200);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [query, searchType]);
+
+  // Close on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  // Clear suggestions when switching type
+  useEffect(() => {
+    setQuery('');
+    setSuggestions([]);
+    setShowSuggestions(false);
+  }, [searchType]);
+
+  const handleSelect = (suggestion: SearchSuggestion) => {
+    setShowSuggestions(false);
+    if (suggestion.type === 'professor') {
+      const slug = suggestion.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      window.location.href = `/professors/${slug}`;
+    } else {
+      const code = suggestion.code.toLowerCase();
+      window.location.href = `/courses/${code}`;
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (!showSuggestions || suggestions.length === 0) return;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActiveIndex((prev) => {
+        const next = prev < suggestions.length - 1 ? prev + 1 : 0;
+        document.querySelector(`.suggestion-item:nth-child(${next + 1})`)?.scrollIntoView({ block: 'nearest' });
+        return next;
+      });
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActiveIndex((prev) => {
+        const next = prev > 0 ? prev - 1 : suggestions.length - 1;
+        document.querySelector(`.suggestion-item:nth-child(${next + 1})`)?.scrollIntoView({ block: 'nearest' });
+        return next;
+      });
+    } else if (e.key === 'Enter' && activeIndex >= 0) {
+      e.preventDefault();
+      handleSelect(suggestions[activeIndex]);
+    } else if (e.key === 'Escape') {
+      setShowSuggestions(false);
+    }
+  };
+
   return (
-    <div className="search-wrapper">
+    <div className="search-wrapper" ref={wrapperRef}>
       <div className="search-bar">
-        <Dropdown
-          className="search-dropdown"
-          options={searchOptions}
-          value={searchType}
-          onChange={setSearchType}
-        />
+        <div onMouseDown={() => setShowSuggestions(false)}>
+          <Dropdown
+            className="search-dropdown"
+            options={searchOptions}
+            value={searchType}
+            onChange={setSearchType}
+          />
+        </div>
 
         <div className="search-divider" />
 
@@ -46,8 +137,45 @@ const SearchBar = () => {
           className="search-input"
           type="text"
           placeholder={placeholderText}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+          onKeyDown={handleKeyDown}
         />
       </div>
+
+      {showSuggestions && (
+        <ul className="search-suggestions">
+          {suggestions.map((s, i) => (
+            <li
+              key={s.type === 'professor' ? s.name : s.code}
+              className={`suggestion-item ${i === activeIndex ? 'active' : ''}`}
+              onClick={() => handleSelect(s)}
+              onMouseEnter={() => setActiveIndex(i)}
+            >
+              {s.type === 'professor' ? (
+                <>
+                  <div className="suggestion-main">
+                    <span className="suggestion-name">{s.name}</span>
+                    <span className="suggestion-dept">{s.dept}</span>
+                  </div>
+                  {s.rating !== null && (
+                    <span className="suggestion-rating">{s.rating.toFixed(2)}</span>
+                  )}
+                </>
+              ) : (
+                <div className="suggestion-main">
+                  <span className="suggestion-name">
+                    <span className="suggestion-code">{s.code}</span>
+                    {' '}{s.name}
+                  </span>
+                  <span className="suggestion-dept">{s.dept}</span>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 };
