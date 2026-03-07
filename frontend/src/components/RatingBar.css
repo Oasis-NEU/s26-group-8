@@ -5,34 +5,34 @@
 }
 
 .rating-bar-star {
-  font-size: 0.82rem;
+  font-size: 0.9rem;
   font-weight: 700;
   color: #888;
-  width: 36px;
+  width: 40px;
   text-align: right;
   flex-shrink: 0;
 }
 
 .rating-bar-track {
   flex: 1;
-  height: 10px;
+  height: 12px;
   background: #eee;
-  border-radius: 5px;
+  border-radius: 6px;
   overflow: hidden;
 }
 
 .rating-bar-fill {
   height: 100%;
   background: linear-gradient(90deg, #d6394c, #e06070);
-  border-radius: 5px;
+  border-radius: 6px;
   transition: width 1s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .rating-bar-count {
-  font-size: 0.82rem;
+  font-size: 0.9rem;
   font-weight: 700;
   color: #555;
-  width: 36px;
+  width: 40px;
   text-align: left;
   font-variant-numeric: tabular-nums;
 }

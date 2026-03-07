@@ -42,16 +42,6 @@ const AnimatedNumber = ({
   return <span ref={ref}>{display}</span>;
 };
 
-/* ───────── grade ordering ───────── */
-const GRADE_ORDER = ['A+','A','A-','B+','B','B-','C+','C','C-','D+','D','D-','F','W','WF','P','NP','I'];
-const GRADE_COLORS: Record<string, string> = {
-  'A+':'#1a9850','A':'#27ae60','A-':'#66bd63',
-  'B+':'#a6d96a','B':'#d4e858','B-':'#fee08b',
-  'C+':'#fdae61','C':'#f39c12','C-':'#e67e22',
-  'D+':'#e74c3c','D':'#d73027','D-':'#c0392b',
-  'F':'#a50026','W':'#7f8c8d','WF':'#636e72','P':'#2980b9','NP':'#8e44ad','I':'#999',
-};
-
 /* ───────── sort / filter options ───────── */
 const sortOptions = [
   { value: 'newest', label: 'Newest First' },
@@ -75,11 +65,13 @@ const tagColors: Record<string, string> = {
 };
 const getTagColor = (tag: string) => tagColors[tag] || '#888';
 
-const ratingColor = (v: number | null) => {
-  if (v === null) return '#888';
-  if (v >= 4) return '#27ae60';
-  if (v >= 3) return '#f39c12';
-  return '#e74c3c';
+const GRADE_ORDER = ['A+','A','A-','B+','B','B-','C+','C','C-','D+','D','D-','F','W','WF','P','NP','I'];
+const GRADE_COLORS: Record<string, string> = {
+  'A+':'#1a9850','A':'#27ae60','A-':'#66bd63',
+  'B+':'#a6d96a','B':'#d4e858','B-':'#fee08b',
+  'C+':'#fdae61','C':'#f39c12','C-':'#e67e22',
+  'D+':'#e74c3c','D':'#d73027','D-':'#c0392b',
+  'F':'#a50026','W':'#7f8c8d','WF':'#636e72','P':'#2980b9','NP':'#8e44ad','I':'#999',
 };
 
 /* ═══════════════════════════════════════ */
@@ -88,6 +80,8 @@ const Professor = () => {
   const navigate = useNavigate();
   const reviewsRef = useRef<HTMLElement>(null);
   const [showBackToTop, setShowBackToTop] = useState(false);
+  const [gradesAnimated, setGradesAnimated] = useState(false);
+  const gradesRef = useRef<HTMLDivElement>(null);
 
   const [profile, setProfile] = useState<ProfessorProfile | null>(null);
   const [reviews, setReviews] = useState<ProfessorReview[]>([]);
@@ -99,12 +93,24 @@ const Professor = () => {
   const [courseFilter, setCourseFilter] = useState('__all__');
   const [visibleReviews, setVisibleReviews] = useState(10);
 
-  /* ── back to top visibility ── */
+  /* ── back to top ── */
   useEffect(() => {
     const handler = () => setShowBackToTop(window.scrollY > 300);
     window.addEventListener('scroll', handler, { passive: true });
     return () => window.removeEventListener('scroll', handler);
   }, []);
+
+  /* ── grade bars animate on scroll ── */
+  useEffect(() => {
+    const el = gradesRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([e]) => { if (e.isIntersecting) { setGradesAnimated(true); obs.disconnect(); } },
+      { threshold: 0.3 },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [profile]);
 
   /* ── data loading ── */
   useEffect(() => {
@@ -126,7 +132,6 @@ const Professor = () => {
 
   useEffect(() => { setVisibleReviews(10); }, [sortBy, courseFilter, reviewTab]);
 
-  /* ── derived data ── */
   const uniqueCourses = Array.from(new Set(reviews.map((r) => r.course).filter(Boolean)));
   const courseOptions = [courseFilterAll, ...uniqueCourses.map((c) => ({ value: c, label: c }))];
 
@@ -146,7 +151,6 @@ const Professor = () => {
   }));
   const maxCount = Math.max(...ratingDistribution.map((d) => d.count), 1);
 
-  /* ── grade distribution ── */
   const gradeDistribution = (() => {
     const counts: Record<string, number> = {};
     reviews.forEach((r) => {
@@ -162,12 +166,10 @@ const Professor = () => {
       .map((g) => ({ grade: g, count: counts[g], pct: (counts[g] / total) * 100, color: GRADE_COLORS[g] || '#999' }));
   })();
 
-  /* ── scroll to reviews ── */
   const scrollToReviews = () => {
     reviewsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
-  /* ── loading ── */
   if (loading) return (
     <div className="prof-page"><Navbar />
       <div className="prof-loading"><div className="prof-loading-spinner" /><p>Loading professor data…</p></div>
@@ -175,7 +177,6 @@ const Professor = () => {
     </div>
   );
 
-  /* ── error ── */
   if (error || !profile) return (
     <div className="prof-page"><Navbar />
       <div className="prof-error">
@@ -205,46 +206,6 @@ const Professor = () => {
           <div className="prof-hero-info">
             <h1 className="prof-name">{profile.name}</h1>
             <p className="prof-dept">{profile.department}</p>
-            <div className="prof-quick-stats">
-              <div className="prof-quick-stat primary">
-                <span className="prof-quick-value" style={{ color: ratingColor(profile.avgRating) }}>{profile.avgRating.toFixed(2)}</span>
-                <span className="prof-quick-label">Overall</span>
-              </div>
-              <div className="prof-quick-divider" />
-              <div className="prof-quick-stat">
-                <span className="prof-quick-value">{profile.rmpRating !== null ? profile.rmpRating.toFixed(2) : '—'}</span>
-                <span className="prof-quick-label">RMP</span>
-              </div>
-              <div className="prof-quick-divider" />
-              <div className="prof-quick-stat">
-                <span className="prof-quick-value">{profile.traceRating !== null ? profile.traceRating.toFixed(2) : '—'}</span>
-                <span className="prof-quick-label">TRACE</span>
-              </div>
-              <div className="prof-quick-divider" />
-              <div className="prof-quick-stat">
-                <span className="prof-quick-value">{profile.difficulty !== null ? profile.difficulty.toFixed(1) : '—'}</span>
-                <span className="prof-quick-label">Difficulty</span>
-              </div>
-              {profile.wouldTakeAgainPct !== null && (<>
-                <div className="prof-quick-divider" />
-                <div className="prof-quick-stat">
-                  <span className="prof-quick-value green">{Math.round(profile.wouldTakeAgainPct)}%</span>
-                  <span className="prof-quick-label">Would Retake</span>
-                </div>
-              </>)}
-            </div>
-            {/* ── action buttons ── */}
-            <div className="prof-hero-actions">
-              <Link to={`/compare?prof=${compareSlug}`} className="prof-compare-btn">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-                Compare
-              </Link>
-              {profile.professorUrl && (
-                <a href={profile.professorUrl} target="_blank" rel="noreferrer" className="prof-rmp-btn">
-                  View on RMP →
-                </a>
-              )}
-            </div>
           </div>
         </div>
       </header>
@@ -265,7 +226,6 @@ const Professor = () => {
           <span className="prof-stat-value green">{profile.wouldTakeAgainPct !== null ? <AnimatedNumber value={profile.wouldTakeAgainPct} decimals={0} suffix="%" /> : '—'}</span>
           <span className="prof-stat-label">Would Take Again</span>
         </div>
-        {/* ── clickable → scroll to reviews ── */}
         <div className="prof-stat-card prof-stat-clickable" onClick={scrollToReviews} title="Jump to reviews">
           <span className="prof-stat-value">{profile.totalRatings.toLocaleString()}</span>
           <span className="prof-stat-label">Total Ratings</span>
@@ -273,9 +233,21 @@ const Professor = () => {
         </div>
       </section>
 
+      {/* ════════ HERO ACTIONS ════════ */}
+      <div className="prof-hero-actions-row">
+        <Link to={`/compare?prof=${compareSlug}`} className="prof-compare-btn">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          Compare
+        </Link>
+        {profile.professorUrl && (
+          <a href={profile.professorUrl} target="_blank" rel="noreferrer" className="prof-rmp-btn">
+            View on RMP →
+          </a>
+        )}
+      </div>
+
       {/* ════════ CHARTS ROW ════════ */}
       <section className="prof-section prof-charts-row">
-        {/* ── Rating Distribution ── */}
         <div className="prof-chart-card">
           <h3 className="prof-chart-title">Rating Distribution</h3>
           <div className="prof-distribution">
@@ -284,17 +256,15 @@ const Professor = () => {
             ))}
           </div>
         </div>
-
-        {/* ── Grade Distribution ── */}
         {gradeDistribution.length > 0 && (
-          <div className="prof-chart-card">
+          <div className="prof-chart-card" ref={gradesRef}>
             <h3 className="prof-chart-title">Grade Distribution</h3>
             <div className="prof-grades">
               {gradeDistribution.map((g) => (
                 <div key={g.grade} className="prof-grade-row">
                   <span className="prof-grade-label" style={{ color: g.color }}>{g.grade}</span>
                   <div className="prof-grade-track">
-                    <div className="prof-grade-fill" style={{ width: `${g.pct}%`, background: g.color }} />
+                    <div className="prof-grade-fill" style={{ width: gradesAnimated ? `${g.pct}%` : '0%', background: g.color }} />
                   </div>
                   <span className="prof-grade-count">{g.count}</span>
                 </div>
@@ -306,9 +276,27 @@ const Professor = () => {
 
       {/* ════════ COURSES ════════ */}
       {profile.traceCourses && profile.traceCourses.length > 0 && (() => {
+        // Strictly extract "Season Year" from messy term titles
+        const cleanTerm = (t: string): string => {
+          // Extract the season keyword
+          const seasonMatch = t.match(/(Spring|Fall|Summer|Winter)/i);
+          if (!seasonMatch) return t.trim();
+          const season = seasonMatch[1].charAt(0).toUpperCase() + seasonMatch[1].slice(1).toLowerCase();
+          // Extract the first valid 4-digit year (2000-2099)
+          const yearMatch = t.match(/\b(20\d{2})\b/);
+          if (!yearMatch) return season;
+          return `${season} ${yearMatch[1]}`;
+        };
+
+        // Extract course code: handle both "SCHM2301:02 (...)" and "SCHM2301 (...)" formats
+        const extractCode = (displayName: string): string => {
+          const match = displayName.match(/^([A-Z]+\d+)/);
+          return match ? match[1] : displayName.split(':')[0].split(' ')[0];
+        };
+
         const grouped = new Map<string, typeof profile.traceCourses>();
         profile.traceCourses.forEach((c) => {
-          const code = c.displayName.split(':')[0] || c.displayName;
+          const code = extractCode(c.displayName);
           if (!grouped.has(code)) grouped.set(code, []);
           grouped.get(code)!.push(c);
         });
@@ -319,7 +307,16 @@ const Professor = () => {
               {Array.from(grouped.entries()).map(([code, sections]) => {
                 const nameMatch = sections[0].displayName.match(/\((.+?)\)/);
                 const courseName = nameMatch ? nameMatch[1] : '';
-                const terms = [...new Set(sections.map((s) => s.termTitle))];
+                const terms = [...new Set(sections.map((s) => cleanTerm(s.termTitle)))]
+                  .filter((t) => /\b20\d{2}\b/.test(t))
+                  .sort((a, b) => {
+                  // Sort by year descending, then season
+                  const yearA = parseInt(a.match(/\d{4}/)?.[0] || '0');
+                  const yearB = parseInt(b.match(/\d{4}/)?.[0] || '0');
+                  if (yearA !== yearB) return yearB - yearA;
+                  const order: Record<string, number> = { Spring: 1, Summer: 2, Fall: 3, Winter: 4 };
+                  return (order[b.split(' ')[0]] || 0) - (order[a.split(' ')[0]] || 0);
+                });
                 return (
                   <div key={code} className="prof-course-row">
                     <div className="prof-course-row-main">
