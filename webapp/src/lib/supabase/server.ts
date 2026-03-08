@@ -1,3 +1,4 @@
+// from the Supabase docs: https://supabase.com/docs/guides/getting-started/tutorials/with-nextjs#:~:text=lib/supabase/server.ts
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 

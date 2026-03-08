@@ -1,4 +1,4 @@
-// Middleware
+// From the Supabase docs: https://supabase.com/docs/guides/getting-started/tutorials/with-nextjs#:~:text=Next.js%20convention.-,proxy.ts,-lib/supabase/proxy
 import { type NextRequest } from "next/server"
 import { updateSession } from "@/src/lib/supabase/proxy"
 

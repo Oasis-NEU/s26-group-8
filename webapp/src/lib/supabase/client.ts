@@ -1,3 +1,4 @@
+// from the Supabase docs: https://supabase.com/docs/guides/getting-started/tutorials/with-nextjs#:~:text=lib/supabase/client.ts
 import { createBrowserClient } from '@supabase/ssr'
 
 export function createClient() {
