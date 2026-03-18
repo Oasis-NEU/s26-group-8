@@ -131,3 +131,7 @@ npm run dev
 npm run build
 npm run preview
 ```
+
+## Summary
+
+RateMyHusky aggregates RateMyProfessors ratings, TRACE evaluation scores, and internal Northeastern metadata into a single platform. Users can search and filter professors, view detailed profiles, compare professors side by side, and authenticate via Google OAuth. The backend is a Flask REST API backed by CockroachDB; the frontend is a React + TypeScript single-page app served by Vite. Data is loaded into CockroachDB via CSV-based scraper outputs and migration scripts.
