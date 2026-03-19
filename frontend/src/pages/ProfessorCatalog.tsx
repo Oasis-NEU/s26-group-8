@@ -819,7 +819,9 @@ function DepartmentFilter({
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState('');
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   // Parse selected departments from comma-separated string
   const selectedSet = new Set(selected ? selected.split(',').map(d => d.trim()).filter(Boolean) : []);
@@ -852,6 +854,29 @@ function DepartmentFilter({
       ? 'Select departments'
       : `${selectedSet.size} selected`;
 
+  const updateMenuPos = () => {
+    if (triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      setMenuPos({ top: rect.bottom + 8, left: rect.left, width: rect.width });
+    }
+  };
+
+  const handleToggleOpen = () => {
+    if (!isOpen) updateMenuPos();
+    setIsOpen(!isOpen);
+  };
+
+  // Keep menu aligned when scrolling or resizing while open
+  useEffect(() => {
+    if (!isOpen) return;
+    window.addEventListener('scroll', updateMenuPos, true);
+    window.addEventListener('resize', updateMenuPos);
+    return () => {
+      window.removeEventListener('scroll', updateMenuPos, true);
+      window.removeEventListener('resize', updateMenuPos);
+    };
+  }, [isOpen]);
+
   // Close on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -867,8 +892,9 @@ function DepartmentFilter({
   return (
     <div className="dept-filter-combo" ref={ref}>
       <button
+        ref={triggerRef}
         className={`dept-combo-trigger ${isOpen ? 'open' : ''}`}
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={handleToggleOpen}
         type="button"
       >
         <span className="dept-combo-label">{displayLabel}</span>
@@ -903,8 +929,17 @@ function DepartmentFilter({
         </div>
       )}
 
-      {isOpen && (
-        <div className="dept-combo-menu">
+      {isOpen && menuPos && (
+        <div
+          className="dept-combo-menu"
+          style={{
+            position: 'fixed',
+            top: menuPos.top,
+            left: menuPos.left,
+            width: menuPos.width,
+            right: 'auto',
+          }}
+        >
           <input
             className="dept-combo-search"
             type="text"
@@ -918,8 +953,8 @@ function DepartmentFilter({
               <p className="dept-combo-empty">No departments found</p>
             ) : (
               filtered.map((d, i) => (
-                <label 
-                  key={d} 
+                <label
+                  key={d}
                   className="dept-combo-option"
                   style={{ animationDelay: `${i * 0.04}s` }}
                 >

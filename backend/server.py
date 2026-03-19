@@ -574,7 +574,7 @@ def departments():
 def professors_catalog():
     q = normalize_name(request.args.get("q", ""))
     college = request.args.get("college", "")
-    dept = request.args.get("dept", "")
+    dept_list = [d.strip() for d in request.args.getlist("dept") if d.strip()]
     sort = request.args.get("sort", "alpha")
     page = int(request.args.get("page", "1"))
     limit = min(int(request.args.get("limit", "20")), 10000)
@@ -612,9 +612,14 @@ def professors_catalog():
     if college and college != "All":
         conditions.append("college = %s")
         params.append(college)
-    if dept and dept != "All":
-        conditions.append("department = %s")
-        params.append(dept)
+    if dept_list:
+        if len(dept_list) == 1:
+            conditions.append("department = %s")
+            params.append(dept_list[0])
+        else:
+            placeholders = ','.join(['%s'] * len(dept_list))
+            conditions.append(f"department IN ({placeholders})")
+            params.extend(dept_list)
     if min_rating > 0:
         conditions.append("avg_rating >= %s")
         params.append(min_rating)
@@ -711,7 +716,7 @@ def course_departments():
 @app.route("/api/courses-catalog")
 def courses_catalog():
     q = normalize_name(request.args.get("q", ""))
-    dept = request.args.get("dept", "")
+    dept_list = [d.strip() for d in request.args.getlist("dept") if d.strip()]
     sort = request.args.get("sort", "alpha")
     page = int(request.args.get("page", "1"))
     limit = min(int(request.args.get("limit", "20")), 10000)
@@ -732,9 +737,14 @@ def courses_catalog():
     where_clauses = []
     params = []
 
-    if dept and dept != "All":
-        where_clauses.append("cc.department = %s")
-        params.append(dept)
+    if dept_list:
+        if len(dept_list) == 1:
+            where_clauses.append("cc.department = %s")
+            params.append(dept_list[0])
+        else:
+            placeholders = ','.join(['%s'] * len(dept_list))
+            where_clauses.append(f"cc.department IN ({placeholders})")
+            params.extend(dept_list)
     if q:
         where_clauses.append("cc.search_text LIKE %s")
         params.append(f"%{q}%")
@@ -796,9 +806,14 @@ def courses_catalog():
     count_where = []
     count_params = []
 
-    if dept and dept != "All":
-        count_where.append("department = %s")
-        count_params.append(dept)
+    if dept_list:
+        if len(dept_list) == 1:
+            count_where.append("department = %s")
+            count_params.append(dept_list[0])
+        else:
+            placeholders = ','.join(['%s'] * len(dept_list))
+            count_where.append(f"department IN ({placeholders})")
+            count_params.extend(dept_list)
     if q:
         count_where.append("search_text LIKE %s")
         count_params.append(f"%{q}%")

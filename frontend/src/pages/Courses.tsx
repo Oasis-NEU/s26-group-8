@@ -494,7 +494,9 @@ function DepartmentFilter({
 }) {
 	const [isOpen, setIsOpen] = useState(false);
 	const [search, setSearch] = useState('');
+	const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number } | null>(null);
 	const ref = useRef<HTMLDivElement>(null);
+	const triggerRef = useRef<HTMLButtonElement>(null);
 
 	const selectedSet = new Set(selected ? selected.split(',').map((d) => d.trim()).filter(Boolean) : []);
 	const filtered = departments.filter((d) => d.toLowerCase().includes(search.toLowerCase()));
@@ -518,6 +520,28 @@ function DepartmentFilter({
 
 	const displayLabel = selectedSet.size === 0 ? 'All departments' : isOpen ? 'Select departments' : `${selectedSet.size} selected`;
 
+	const updateMenuPos = () => {
+		if (triggerRef.current) {
+			const rect = triggerRef.current.getBoundingClientRect();
+			setMenuPos({ top: rect.bottom + 8, left: rect.left, width: rect.width });
+		}
+	};
+
+	const handleToggleOpen = () => {
+		if (!isOpen) updateMenuPos();
+		setIsOpen(!isOpen);
+	};
+
+	useEffect(() => {
+		if (!isOpen) return;
+		window.addEventListener('scroll', updateMenuPos, true);
+		window.addEventListener('resize', updateMenuPos);
+		return () => {
+			window.removeEventListener('scroll', updateMenuPos, true);
+			window.removeEventListener('resize', updateMenuPos);
+		};
+	}, [isOpen]);
+
 	useEffect(() => {
 		const handler = (e: MouseEvent) => {
 			if (ref.current && !ref.current.contains(e.target as Node)) {
@@ -531,7 +555,7 @@ function DepartmentFilter({
 
 	return (
 		<div className="dept-filter-combo" ref={ref}>
-			<button className={`dept-combo-trigger ${isOpen ? 'open' : ''}`} onClick={() => setIsOpen(!isOpen)} type="button">
+			<button ref={triggerRef} className={`dept-combo-trigger ${isOpen ? 'open' : ''}`} onClick={handleToggleOpen} type="button">
 				<span className="dept-combo-label">{displayLabel}</span>
 				<svg
 					className={`dept-combo-chevron ${isOpen ? 'rotated' : ''}`}
@@ -566,8 +590,17 @@ function DepartmentFilter({
 				</div>
 			)}
 
-			{isOpen && (
-				<div className="dept-combo-menu">
+			{isOpen && menuPos && (
+				<div
+					className="dept-combo-menu"
+					style={{
+						position: 'fixed',
+						top: menuPos.top,
+						left: menuPos.left,
+						width: menuPos.width,
+						right: 'auto',
+					}}
+				>
 					<input
 						className="dept-combo-search"
 						type="text"
