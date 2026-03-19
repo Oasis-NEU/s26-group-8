@@ -282,7 +282,10 @@ export function fetchCoursesCatalog(params: {
 }): Promise<CourseCatalogResponse> {
   const sp = new URLSearchParams();
   if (params.q) sp.set('q', params.q);
-  if (params.dept) sp.set('dept', params.dept);
+  if (params.dept) {
+    const depts = params.dept.split(',').map(d => d.trim()).filter(Boolean);
+    depts.forEach(d => sp.append('dept', d));
+  }
   if (params.minRating) sp.set('minRating', String(params.minRating));
   if (params.maxRating !== undefined && params.maxRating < 5) sp.set('maxRating', String(params.maxRating));
   if (params.sort) sp.set('sort', params.sort);
