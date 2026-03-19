@@ -11,6 +11,7 @@ import {
 import StarRating from '../components/StarRating';
 import RatingBadge from '../components/RatingBadge';
 import Dropdown from '../components/Dropdown';
+import Footer from '../components/Footer';
 
 import './ProfessorCatalog.css';
 
@@ -724,6 +725,8 @@ export default function ProfessorCatalog() {
           )}
         </main>
       </div>
+
+      <Footer />
     </div>
   );
 }
