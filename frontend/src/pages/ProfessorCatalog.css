@@ -7,6 +7,10 @@
   font-family: 'Nunito', sans-serif;
 }
 
+.catalog-page * {
+  font-family: 'Nunito', sans-serif;
+}
+
 .catalog-layout {
   display: flex;
   padding: 0 clamp(16px, 3vw, 48px) 60px;
@@ -83,6 +87,7 @@
 .dept-clear-btn {
   text-transform: none;
   letter-spacing: normal;
+  font-family: 'Nunito', sans-serif;
 }
 
 /* College pills */
