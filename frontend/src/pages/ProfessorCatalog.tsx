@@ -395,7 +395,18 @@ export default function ProfessorCatalog() {
 
             {/* Department */}
             <div className="filter-section">
-              <p className="filter-label">Department</p>
+              <p className="filter-label">
+                Department
+                {filters.dept && (
+                  <button
+                    className="clear-btn dept-clear-btn"
+                    onClick={() => updateFilter('dept', '')}
+                    type="button"
+                  >
+                    Clear all
+                  </button>
+                )}
+              </p>
               <DepartmentFilter
                 departments={departments}
                 selected={filters.dept}
@@ -878,17 +889,16 @@ function DepartmentFilter({
       {selectedSet.size > 0 && (
         <div className="dept-selected-pills">
           {Array.from(selectedSet).map((dept) => (
-            <div key={dept} className="dept-pill">
+            <button
+              key={dept}
+              className="dept-pill"
+              onClick={(e) => handleRemovePill(dept, e)}
+              type="button"
+              aria-label={`Remove ${dept}`}
+            >
               <span className="dept-pill-text">{dept}</span>
-              <button
-                className="dept-pill-remove"
-                onClick={(e) => handleRemovePill(dept, e)}
-                type="button"
-                aria-label={`Remove ${dept}`}
-              >
-                ×
-              </button>
-            </div>
+              <span className="dept-pill-remove" aria-hidden="true">×</span>
+            </button>
           ))}
         </div>
       )}
