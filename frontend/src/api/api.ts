@@ -248,7 +248,11 @@ export function fetchProfessorsCatalog(params: {
   const sp = new URLSearchParams();
   if (params.q) sp.set('q', params.q);
   if (params.college) sp.set('college', params.college);
-  if (params.dept) sp.set('dept', params.dept);
+  // Handle multiple departments (comma-separated) as OR query
+  if (params.dept) {
+    const depts = params.dept.split(',').map(d => d.trim()).filter(Boolean);
+    depts.forEach(d => sp.append('dept', d));
+  }
   if (params.minRating) sp.set('minRating', String(params.minRating));
   if (params.maxRating !== undefined && params.maxRating < 5) sp.set('maxRating', String(params.maxRating));
   if (params.minReviews) sp.set('minReviews', String(params.minReviews));

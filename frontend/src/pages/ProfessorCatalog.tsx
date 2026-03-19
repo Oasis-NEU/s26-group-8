@@ -804,47 +804,127 @@ function DepartmentFilter({
 }: {
   departments: string[];
   selected: string;
-  onSelect: (dept: string) => void;
+  onSelect: (depts: string) => void;
 }) {
+  const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Parse selected departments from comma-separated string
+  const selectedSet = new Set(selected ? selected.split(',').map(d => d.trim()).filter(Boolean) : []);
   const filtered = departments.filter(d =>
     d.toLowerCase().includes(search.toLowerCase())
   );
 
+  const handleToggleDept = (dept: string) => {
+    const newSet = new Set(selectedSet);
+    if (newSet.has(dept)) {
+      newSet.delete(dept);
+    } else {
+      newSet.add(dept);
+    }
+    const newValue = Array.from(newSet).join(',');
+    onSelect(newValue);
+  };
+
+  const handleRemovePill = (dept: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const newSet = new Set(selectedSet);
+    newSet.delete(dept);
+    const newValue = Array.from(newSet).join(',');
+    onSelect(newValue);
+  };
+
+  const displayLabel = selectedSet.size === 0
+    ? 'All departments'
+    : isOpen
+      ? 'Select departments'
+      : `${selectedSet.size} selected`;
+
+  // Close on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setIsOpen(false);
+        setSearch('');
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
   return (
-    <div className="dept-filter">
-      <input
-        className="dept-search"
-        type="text"
-        placeholder="Search departments…"
-        value={search}
-        onChange={e => setSearch(e.target.value)}
-      />
-      <div className="dept-list">
-        <label className="dept-option">
+    <div className="dept-filter-combo" ref={ref}>
+      <button
+        className={`dept-combo-trigger ${isOpen ? 'open' : ''}`}
+        onClick={() => setIsOpen(!isOpen)}
+        type="button"
+      >
+        <span className="dept-combo-label">{displayLabel}</span>
+        <svg
+          className={`dept-combo-chevron ${isOpen ? 'rotated' : ''}`}
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {selectedSet.size > 0 && (
+        <div className="dept-selected-pills">
+          {Array.from(selectedSet).map((dept) => (
+            <div key={dept} className="dept-pill">
+              <span className="dept-pill-text">{dept}</span>
+              <button
+                className="dept-pill-remove"
+                onClick={(e) => handleRemovePill(dept, e)}
+                type="button"
+                aria-label={`Remove ${dept}`}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {isOpen && (
+        <div className="dept-combo-menu">
           <input
-            type="radio"
-            name="dept"
-            checked={!selected}
-            onChange={() => onSelect('')}
+            className="dept-combo-search"
+            type="text"
+            placeholder="Search departments…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            autoFocus
           />
-          <span>All departments</span>
-        </label>
-        {filtered.map(d => (
-          <label key={d} className="dept-option">
-            <input
-              type="radio"
-              name="dept"
-              checked={selected === d}
-              onChange={() => onSelect(d)}
-            />
-            <span>{d}</span>
-          </label>
-        ))}
-        {filtered.length === 0 && (
-          <p className="dept-empty">No departments found</p>
-        )}
-      </div>
+          <div className="dept-combo-list">
+            {filtered.length === 0 ? (
+              <p className="dept-combo-empty">No departments found</p>
+            ) : (
+              filtered.map((d, i) => (
+                <label 
+                  key={d} 
+                  className="dept-combo-option"
+                  style={{ animationDelay: `${i * 0.04}s` }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedSet.has(d)}
+                    onChange={() => handleToggleDept(d)}
+                  />
+                  <span>{d}</span>
+                </label>
+              ))
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
