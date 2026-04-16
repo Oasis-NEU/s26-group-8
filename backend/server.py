@@ -161,7 +161,7 @@ app.config["COMPRESS_MIN_SIZE"] = 256
 Compress(app)
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 CORS(app, supports_credentials=True, origins=[FRONTEND_URL])
-limiter = Limiter(get_remote_address, app=app, default_limits=["120 per minute"])
+limiter = Limiter(get_remote_address, app=app, default_limits=["120 per minute", "20 per second"])
 
 
 BLOCKED_USER_AGENTS = [
@@ -173,12 +173,66 @@ BLOCKED_USER_AGENTS = [
     "barkrowler", "dataforseobot",
 ]
 
+# ── Auto-ban: temporarily block IPs that repeatedly hit the rate limit ──
+_banned_ips = {}        # ip -> ban_expiry timestamp
+_ban_lock = Lock()
+_rate_limit_strikes = {}  # ip -> [timestamps of 429 hits]
+BAN_STRIKE_THRESHOLD = 5  # strikes within the window to trigger a ban
+BAN_STRIKE_WINDOW = 60    # seconds to count strikes
+BAN_DURATION = 600        # 10 min ban
+
+ALLOWED_ORIGINS = {
+    FRONTEND_URL,
+    "http://localhost:5173",
+    "http://localhost:3000",
+}
+
+
+@app.before_request
+def block_banned_ips():
+    ip = get_remote_address()
+    with _ban_lock:
+        expiry = _banned_ips.get(ip)
+        if expiry and time.time() < expiry:
+            return jsonify({"error": "Temporarily blocked"}), 403
+        elif expiry:
+            del _banned_ips[ip]
+
 
 @app.before_request
 def block_bots():
     ua = (request.headers.get("User-Agent") or "").lower()
     if ua and any(bot in ua for bot in BLOCKED_USER_AGENTS):
         return jsonify({"error": "Forbidden"}), 403
+
+
+@app.before_request
+def check_origin():
+    """Block API requests that don't originate from the frontend."""
+    if request.path.startswith("/api/auth/google"):
+        return  # allow OAuth redirects
+    if request.method == "OPTIONS":
+        return  # allow CORS preflight
+    origin = request.headers.get("Origin") or request.headers.get("Referer") or ""
+    if origin and not any(origin.startswith(o) for o in ALLOWED_ORIGINS):
+        return jsonify({"error": "Forbidden"}), 403
+
+
+@app.after_request
+def track_rate_limit_bans(response):
+    """Auto-ban IPs that repeatedly trigger rate limits."""
+    if response.status_code == 429:
+        ip = get_remote_address()
+        now = time.time()
+        with _ban_lock:
+            strikes = _rate_limit_strikes.setdefault(ip, [])
+            strikes.append(now)
+            # prune old strikes outside the window
+            _rate_limit_strikes[ip] = [t for t in strikes if now - t < BAN_STRIKE_WINDOW]
+            if len(_rate_limit_strikes[ip]) >= BAN_STRIKE_THRESHOLD:
+                _banned_ips[ip] = now + BAN_DURATION
+                del _rate_limit_strikes[ip]
+    return response
 
 
 @app.after_request

@@ -20,7 +20,7 @@ import psycopg2
 from psycopg2.extras import execute_values
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "Better_Scraper", "output_data")
-BATCH_SIZE = 50000  # larger batches = fewer round trips = fewer RUs
+BATCH_SIZE = 25000  # smaller batches to stay under CockroachDB lock-tracking budget
 
 
 def get_connection():
@@ -98,6 +98,7 @@ def upload_csv(conn, table: str, columns: list[str], csv_path: str,
             if len(batch) >= BATCH_SIZE:
                 with conn.cursor() as cur:
                     execute_values(cur, insert_sql, batch, page_size=BATCH_SIZE)
+                conn.commit()
                 total += len(batch)
                 print(f"  Uploaded {total:,} new rows (skipped {skipped:,} existing)...", end="\r")
                 batch = []
@@ -105,10 +106,8 @@ def upload_csv(conn, table: str, columns: list[str], csv_path: str,
         if batch:
             with conn.cursor() as cur:
                 execute_values(cur, insert_sql, batch, page_size=BATCH_SIZE)
+            conn.commit()
             total += len(batch)
-
-    # Single commit per table instead of per batch
-    conn.commit()
     print(f"  Done: {total:,} rows inserted, {skipped:,} skipped (already in DB).")
 
 
