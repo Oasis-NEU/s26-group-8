@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import type { ReactNode } from 'react';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+const API_BASE = import.meta.env.VITE_API_URL || '';
 const TOKEN_KEY = 'auth_token';
 
 interface User {
@@ -92,7 +92,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Listen for popup completion
   useEffect(() => {
     const handler = (e: MessageEvent) => {
-      if (e.origin !== new URL(API_BASE).origin) return;
+      const expectedOrigin = API_BASE ? new URL(API_BASE).origin : window.location.origin;
+      if (e.origin !== expectedOrigin) return;
       if (e.data?.type === 'auth_complete' && e.data?.token) {
         storeToken(e.data.token);
         fetchUser();

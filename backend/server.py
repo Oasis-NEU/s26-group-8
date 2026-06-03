@@ -161,7 +161,16 @@ app.config["COMPRESS_MIN_SIZE"] = 256
 Compress(app)
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 CORS(app, supports_credentials=True, origins=[FRONTEND_URL])
-limiter = Limiter(get_remote_address, app=app, default_limits=["120 per minute", "20 per second"])
+def get_real_ip():
+    """Get the real client IP from X-Forwarded-For (set by Vercel/Railway proxy)."""
+    xff = request.headers.get("X-Forwarded-For", "")
+    if xff:
+        # Last entry is the IP appended by our trusted proxy (Vercel/Railway);
+        # earlier entries are client-supplied and spoofable.
+        return xff.split(",")[-1].strip()
+    return get_remote_address()
+
+limiter = Limiter(get_real_ip, app=app, default_limits=["20 per second"])
 
 
 BLOCKED_USER_AGENTS = [
@@ -173,30 +182,11 @@ BLOCKED_USER_AGENTS = [
     "barkrowler", "dataforseobot",
 ]
 
-# ── Auto-ban: temporarily block IPs that repeatedly hit the rate limit ──
-_banned_ips = {}        # ip -> ban_expiry timestamp
-_ban_lock = Lock()
-_rate_limit_strikes = {}  # ip -> [timestamps of 429 hits]
-BAN_STRIKE_THRESHOLD = 5  # strikes within the window to trigger a ban
-BAN_STRIKE_WINDOW = 60    # seconds to count strikes
-BAN_DURATION = 600        # 10 min ban
-
 ALLOWED_ORIGINS = {
     FRONTEND_URL,
     "http://localhost:5173",
     "http://localhost:3000",
 }
-
-
-@app.before_request
-def block_banned_ips():
-    ip = get_remote_address()
-    with _ban_lock:
-        expiry = _banned_ips.get(ip)
-        if expiry and time.time() < expiry:
-            return jsonify({"error": "Temporarily blocked"}), 403
-        elif expiry:
-            del _banned_ips[ip]
 
 
 @app.before_request
@@ -216,23 +206,6 @@ def check_origin():
     origin = request.headers.get("Origin") or request.headers.get("Referer") or ""
     if origin and not any(origin.startswith(o) for o in ALLOWED_ORIGINS):
         return jsonify({"error": "Forbidden"}), 403
-
-
-@app.after_request
-def track_rate_limit_bans(response):
-    """Auto-ban IPs that repeatedly trigger rate limits."""
-    if response.status_code == 429:
-        ip = get_remote_address()
-        now = time.time()
-        with _ban_lock:
-            strikes = _rate_limit_strikes.setdefault(ip, [])
-            strikes.append(now)
-            # prune old strikes outside the window
-            _rate_limit_strikes[ip] = [t for t in strikes if now - t < BAN_STRIKE_WINDOW]
-            if len(_rate_limit_strikes[ip]) >= BAN_STRIKE_THRESHOLD:
-                _banned_ips[ip] = now + BAN_DURATION
-                del _rate_limit_strikes[ip]
-    return response
 
 
 @app.after_request
@@ -1938,10 +1911,8 @@ def course_profile(code):
 #  Google OAuth routes
 # ──────────────────────────────────────────────
 def _get_redirect_uri():
-    # Railway/proxies send X-Forwarded-Proto; use https in production
-    scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
-    host = request.host
-    return f"{scheme}://{host}/api/auth/google/callback"
+    # Use FRONTEND_URL so OAuth callbacks go through the Vercel proxy, not direct to Railway
+    return f"{FRONTEND_URL}/api/auth/google/callback"
 
 
 @app.route("/api/auth/google")
@@ -2083,7 +2054,7 @@ def submit_feedback():
         try:
             verify_resp = http_requests.post(
                 "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-                data={"secret": turnstile_secret, "response": turnstile_token, "remoteip": get_remote_address()},
+                data={"secret": turnstile_secret, "response": turnstile_token, "remoteip": get_real_ip()},
                 timeout=5,
             )
             if not verify_resp.ok or not verify_resp.json().get("success"):
