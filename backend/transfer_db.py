@@ -3,7 +3,7 @@ Transfer all tables from old CockroachDB cluster to new one.
 Reads CRDB_DATABASE_URL (old) and NEW_CRDB_DATABASE_URL (new) from .env.
 """
 
-import os, sys
+import os, sys, time
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import execute_values
@@ -17,6 +17,29 @@ if not OLD_URL or not NEW_URL:
     sys.exit("Need both CRDB_DATABASE_URL and NEW_CRDB_DATABASE_URL in .env")
 
 BATCH_SIZE = 5000
+
+
+def connect_database(label, url, attempts=5):
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return psycopg2.connect(url, sslmode="require")
+        except psycopg2.OperationalError as exc:
+            message = str(exc)
+            if "could not translate host name" not in message:
+                raise
+
+            last_error = message
+            if attempt < attempts:
+                print(f"  DNS lookup failed for {label}; retrying ({attempt}/{attempts})...")
+                time.sleep(2)
+
+    sys.exit(
+        f"Could not resolve the hostname in {label} after {attempts} attempts.\n"
+        "The connection string may still be correct; this machine's DNS resolver is "
+        "intermittently failing to resolve the CockroachDB Cloud hostname.\n\n"
+        f"Original error:\n{last_error}"
+    )
 
 
 def get_tables(conn):
@@ -96,9 +119,9 @@ def transfer_table(old_conn, new_conn, table):
 
 def main():
     print("Connecting to old cluster...")
-    old_conn = psycopg2.connect(OLD_URL, sslmode="require")
+    old_conn = connect_database("CRDB_DATABASE_URL", OLD_URL)
     print("Connecting to new cluster...")
-    new_conn = psycopg2.connect(NEW_URL, sslmode="require")
+    new_conn = connect_database("NEW_CRDB_DATABASE_URL", NEW_URL)
 
     tables = get_tables(old_conn)
     print(f"Found {len(tables)} tables: {', '.join(tables)}\n")
