@@ -379,23 +379,29 @@ def match_item(
         if not profs:
             continue
         for prof in profs:
-            conf = 0.85
-            # Corroboration signals: first name present, dept present, or a
-            # course this prof teaches present.
-            has_first = bool(prof.first_name) and _contains_word(norm_text, prof.first_name)
+            # Corroboration. A single-character first name ("D Hope") is too weak
+            # to count — it would match almost any text.
+            has_first = (len(prof.first_name) >= 2
+                         and _contains_word(norm_text, prof.first_name))
             has_dept = _contains_word(norm_text, prof.dept_norm)
             has_course = prof.name_key in course_keys_present
+
+            # Bare last name (no corroboration) is inherently low-precision, so it
+            # stays BELOW resolve_threshold (0.80) and can only become ambiguous.
+            # Corroboration lifts it into the resolve range. Dept alone is weak,
+            # so it nudges but does not by itself cross the threshold.
+            conf = 0.70
+            if has_dept:
+                conf = 0.75
             if has_first:
                 conf = 0.97
-            if has_dept:
-                conf = min(1.0, conf + 0.05)
             if has_course:
                 conf = max(conf, 0.98)
-            # Common-English-word surnames ("law", "hall", "you", ...) are a
-            # major false-positive source ("check the Law", "on the Hill"). A
-            # bare match on one only counts if corroborated by first/dept/course.
-            needs_corroboration = last in _COMMON_WORD_SURNAMES or len(last) <= 2
-            if needs_corroboration and not (has_first or has_dept or has_course):
+
+            # Stoplisted or very short surnames are pure noise when bare — drop
+            # them from the output entirely (not even ambiguous).
+            bare = not (has_first or has_dept or has_course)
+            if bare and (last in _COMMON_WORD_SURNAMES or len(last) <= 2):
                 continue
             cands.append(Candidate(prof.name_key, conf, "lastname", last))
 
@@ -735,9 +741,13 @@ def golden_selftest(check) -> None:
     r = resolve(f"I really enjoyed Professor {display} this semester")
     check("golden: full name resolves",
           r is not None and r.status == "resolved" and r.name_key == distinctive.name_key)
-    # bare distinctive surname -> resolved (single prof, not stoplisted)
+    # bare distinctive surname -> ambiguous now (bare last names don't resolve)
     r = resolve(f"{distinctive.last_name.title()} was a fair grader")
-    check("golden: distinctive surname resolves",
+    check("golden: bare surname does not resolve",
+          r is None or r.status == "ambiguous")
+    # but WITH the first name it resolves
+    r = resolve(f"{distinctive.first_name.title()} {distinctive.last_name.title()} was fair")
+    check("golden: corroborated surname resolves",
           r is not None and r.status == "resolved" and r.name_key == distinctive.name_key)
     # a real collision surname bare -> ambiguous
     collide = next(ln for ln, ps in index.by_last_name.items() if len(ps) >= 5 and ln not in _COMMON_WORD_SURNAMES)
@@ -804,7 +814,9 @@ def selftest() -> int:
     check("L1 exact full", any(c.method == "exact_full" and c.confidence == 1.0 for c in cands))
 
     cands = match_item("Kuznetsov is brutal", idx, course_map)
-    check("L2 single lastname", any(c.method == "lastname" and c.name_key == "anatoliy kuznetsov" for c in cands))
+    check("L2 bare lastname is sub-threshold",
+          any(c.method == "lastname" and c.name_key == "anatoliy kuznetsov"
+              and c.confidence < 0.80 for c in cands))
 
     cands = match_item("Kim is a great teacher", idx, course_map)
     check("L2 collision -> 2 candidates", len({c.name_key for c in cands if c.method == "lastname"}) == 2)
