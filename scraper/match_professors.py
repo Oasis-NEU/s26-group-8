@@ -123,6 +123,94 @@ def parse_sql_values(body: str) -> List[List[Optional[str]]]:
     return rows
 
 
+@dataclass
+class Professor:
+    slug: str
+    name: str
+    name_key: str
+    department: str
+    college: str
+    num_ratings: int
+    total_reviews: int
+    total_comments: int
+
+    @property
+    def first_name(self) -> str:
+        parts = self.name_key.split()
+        return parts[0] if parts else ""
+
+    @property
+    def last_name(self) -> str:
+        parts = self.name_key.split()
+        return parts[-1] if parts else ""
+
+
+# Column order from CREATE TABLE professors_catalog in the backup.
+_CATALOG_COLS = [
+    "slug", "name", "name_key", "department", "college", "avg_rating",
+    "rmp_rating", "trace_rating", "num_ratings", "trace_reviews",
+    "total_reviews", "would_take_again_pct", "difficulty", "professor_url",
+    "image_url", "avg_hours", "total_comments",
+]
+
+
+def _to_int(v: Optional[str]) -> int:
+    try:
+        return int(float(v)) if v not in (None, "") else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def load_catalog(backup_path: str) -> List[Professor]:
+    """Extract professors_catalog rows from the gzipped SQL backup.
+
+    Reads every `INSERT INTO professors_catalog (...) VALUES ...;` statement and
+    parses its rows. name_key is already alias-merged/canonical in this table,
+    so no ALIAS_MAP is applied here.
+    """
+    idx = {c: i for i, c in enumerate(_CATALOG_COLS)}
+    profs: List[Professor] = []
+    skipped = 0
+    with gzip.open(backup_path, "rt", encoding="utf-8", errors="replace") as f:
+        buf: List[str] = []
+        capturing = False
+        for line in f:
+            if not capturing and re.match(r"INSERT INTO professors_catalog[ (]", line):
+                capturing = True
+                buf = [line]
+            elif capturing:
+                buf.append(line)
+            else:
+                continue
+            if capturing and line.rstrip().endswith(";"):
+                stmt = "".join(buf)
+                vpos = stmt.find(" VALUES")
+                if vpos == -1:
+                    capturing = False
+                    buf = []
+                    continue
+                body = stmt[vpos + len(" VALUES"):].rstrip().rstrip(";")
+                for row in parse_sql_values(body):
+                    if len(row) < len(_CATALOG_COLS):
+                        skipped += 1
+                        continue
+                    profs.append(Professor(
+                        slug=row[idx["slug"]] or "",
+                        name=row[idx["name"]] or "",
+                        name_key=normalize_name(row[idx["name_key"]] or ""),
+                        department=row[idx["department"]] or "",
+                        college=row[idx["college"]] or "",
+                        num_ratings=_to_int(row[idx["num_ratings"]]),
+                        total_reviews=_to_int(row[idx["total_reviews"]]),
+                        total_comments=_to_int(row[idx["total_comments"]]),
+                    ))
+                capturing = False
+                buf = []
+    if skipped:
+        print(f"  ⚠ load_catalog skipped {skipped} short rows")
+    return profs
+
+
 def selftest() -> int:
     failures = 0
 
@@ -146,6 +234,15 @@ def selftest() -> int:
           parse_sql_values("('f(x)','y')")[0] == ["f(x)", "y"])
     check("sql parse empty string", parse_sql_values("('')")[0] == [""])
     check("sql parse quoted NULL stays string", parse_sql_values("('NULL')")[0] == ["NULL"])
+
+    if os.path.exists(DEFAULT_BACKUP):
+        profs = load_catalog(DEFAULT_BACKUP)
+        check("catalog loads many profs", len(profs) > 5000)
+        check("catalog has name_key", all(p.name_key for p in profs[:50]))
+        sample = next((p for p in profs if " " in p.name_key), None)
+        check("derives last name", sample is not None and sample.last_name != "")
+    else:
+        check("catalog backup present (skipped)", True)
 
     print(f"\n  {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures
