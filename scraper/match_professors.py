@@ -660,6 +660,94 @@ def run(args: argparse.Namespace) -> None:
     print(f"\n  ✓ wrote mentions → {MENTIONS_CSV}")
 
 
+_BANDS = [(0.55, 0.65), (0.65, 0.75), (0.75, 0.85), (0.85, 0.95), (0.95, 1.001)]
+
+
+def confidence_band(conf: float) -> str:
+    for lo, hi in _BANDS:
+        if lo <= conf < hi:
+            top = "1.00" if hi > 1.0 else f"{hi:.2f}"
+            return f"{lo:.2f}-{top}"
+    return "below"
+
+
+def calibrate(args: argparse.Namespace) -> None:
+    """Wide-open run: emit a stratified sample (by band x method) for eyeballing.
+
+    Captures every raw candidate (no floor/aggregate applied) so the full
+    confidence range is observable. Writes calibration_sample.csv with up to N
+    rows per (band, method) cell, including the surrounding text snippet so
+    precision can be judged by hand.
+    """
+    import random
+    random.seed(0)
+    per_cell = 25
+
+    profs = load_catalog(args.backup)
+    index = ProfessorIndex(profs)
+    name_by_key = {p.name_key: p.name for p in profs}
+    course_map = load_course_map(TRACE_COURSES_CSV, index)
+
+    buckets: Dict[Tuple[str, str], List[Dict[str, str]]] = defaultdict(list)
+    seen: Dict[Tuple[str, str], int] = defaultdict(int)
+
+    def consider(source_id: str, text: str, c: Candidate) -> None:
+        cell = (confidence_band(c.confidence), c.method)
+        seen[cell] += 1
+        # Reservoir sampling so the sample is unbiased across the full stream.
+        bucket = buckets[cell]
+        if len(bucket) < per_cell:
+            bucket.append(_calib_row(source_id, text, c, name_by_key))
+        else:
+            j = random.randint(0, seen[cell] - 1)
+            if j < per_cell:
+                bucket[j] = _calib_row(source_id, text, c, name_by_key)
+
+    n = 0
+    for row in read_csv_rows(POSTS_CSV, args.limit):
+        pid = row.get("id", "")
+        text = _post_text(row)
+        for c in match_item(text, index, course_map):
+            consider(pid, text, c)
+        n += 1
+    for row in read_csv_rows(COMMENTS_CSV, args.limit):
+        cid = row.get("id", "")
+        text = row.get("body", "")
+        for c in match_item(text, index, course_map):
+            consider(cid, text, c)
+        n += 1
+
+    with open(CALIBRATION_CSV, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=[
+            "band", "method", "confidence", "source_id", "name_key",
+            "professor_name", "matched_token", "snippet",
+        ])
+        w.writeheader()
+        for cell in sorted(buckets):
+            for r in buckets[cell]:
+                w.writerow(r)
+
+    print(f"  scanned {n} items")
+    print("  candidate counts per (band, method):")
+    for cell in sorted(seen):
+        print(f"    {cell[0]:>11}  {cell[1]:<14} {seen[cell]}")
+    print(f"\n  ✓ wrote sample → {CALIBRATION_CSV}")
+    print("  Inspect it by hand: find the band where precision falls off — that")
+    print("  is your --resolve-threshold. Record chosen values + evidence in the spec.")
+
+
+def _calib_row(source_id, text, c, name_by_key):
+    idx = (text or "").lower().find(c.matched_token.lower())
+    start = max(0, idx - 40)
+    snippet = " ".join((text or "")[start:idx + 60].split())
+    return {
+        "band": confidence_band(c.confidence), "method": c.method,
+        "confidence": round(c.confidence, 3), "source_id": source_id,
+        "name_key": c.name_key, "professor_name": name_by_key.get(c.name_key, ""),
+        "matched_token": c.matched_token, "snippet": snippet,
+    }
+
+
 def selftest() -> int:
     failures = 0
 
@@ -790,6 +878,10 @@ def selftest() -> int:
     check("mention_id stable", a == b)
     check("mention_id distinct per prof", a != c)
 
+    check("band low", confidence_band(0.60) == "0.55-0.65")
+    check("band mid", confidence_band(0.81) == "0.75-0.85")
+    check("band top", confidence_band(1.0) == "0.95-1.00")
+
     print(f"\n  {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures
 
@@ -808,6 +900,9 @@ def main() -> None:
 
     if args.selftest:
         sys.exit(selftest())
+    if args.calibrate:
+        calibrate(args)
+        return
     run(args)
 
 
