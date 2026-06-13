@@ -79,7 +79,11 @@ async function proxyToBackend(request: Request, url: URL): Promise<Response> {
 export default async function middleware(request: Request): Promise<Response | undefined> {
   const url = new URL(request.url);
 
-  if (maintenance.on && !(await hasValidBypass(request))) {
+  // Feedback stays open during maintenance (the page has its own form);
+  // it's Turnstile-verified and rate-limited server-side.
+  const isFeedback = url.pathname === '/api/feedback';
+
+  if (maintenance.on && !isFeedback && !(await hasValidBypass(request))) {
     return new Response(null, {
       status: 307,
       headers: { Location: new URL('/maintenance.html', request.url).toString() },

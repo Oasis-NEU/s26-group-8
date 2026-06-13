@@ -48,9 +48,12 @@
   position: relative;
   background: #fff;
   border-radius: 16px;
-  width: 340px;
+  /* 360px - 56px padding = 304px content, fits the fixed 300px-wide
+     Turnstile iframe without a horizontal scrollbar */
+  width: 360px;
   max-height: 90vh;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 32px 28px;
   box-shadow: 0 12px 40px rgba(0,0,0,0.18);
   display: flex;

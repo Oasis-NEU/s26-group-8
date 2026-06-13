@@ -24,7 +24,14 @@
         location.replace('/');
       }
     })();
+
+    // Same theme mechanism as the main site (.dark class + localStorage),
+    // applied before first paint.
+    if (localStorage.getItem('theme') === 'dark') {
+      document.documentElement.classList.add('dark');
+    }
   </script>
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
   <!-- Google Analytics (same tag as the main site) so maintenance-page
        visitors still show up in realtime reports -->
   <script async src="https://www.googletagmanager.com/gtag/js?id=G-NY3WJ7WEKL"></script>
@@ -61,17 +68,15 @@
       --shadow-vis: rgba(0, 0, 0, 0.12);
     }
 
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg:         #1a1a1a;
-        --card-bg:    #242424;
-        --card-border:#333333;
-        --visual-bg:  #2a2a2a;
-        --h1:         #f3f3f3;
-        --body:       #b0b0b0;
-        --shadow:     rgba(0, 0, 0, 0.28);
-        --shadow-vis: rgba(0, 0, 0, 0.32);
-      }
+    html.dark {
+      --bg:         #1a1a1a;
+      --card-bg:    #242424;
+      --card-border:#333333;
+      --visual-bg:  #2a2a2a;
+      --h1:         #f3f3f3;
+      --body:       #b0b0b0;
+      --shadow:     rgba(0, 0, 0, 0.28);
+      --shadow-vis: rgba(0, 0, 0, 0.32);
     }
 
     html, body {
@@ -103,11 +108,9 @@
       border-bottom: 1px solid rgba(0, 0, 0, 0.06);
     }
 
-    @media (prefers-color-scheme: dark) {
-      .navbar {
-        background: rgba(26, 26, 26, 0.88);
-        border-bottom-color: rgba(255, 255, 255, 0.06);
-      }
+    html.dark .navbar {
+      background: rgba(26, 26, 26, 0.88);
+      border-bottom-color: rgba(255, 255, 255, 0.06);
     }
 
     .navbar-logo {
@@ -144,13 +147,11 @@
       pointer-events: none;
     }
 
-    @media (prefers-color-scheme: dark) {
-      .main::before {
-        background:
-          radial-gradient(circle at 18% 20%, rgba(214, 57, 76, 0.18) 0, transparent 28%),
-          radial-gradient(circle at 82% 14%, rgba(214, 57, 76, 0.12) 0, transparent 24%),
-          linear-gradient(180deg, rgba(23,23,23,0.94) 0%, rgba(28,28,28,0.98) 100%);
-      }
+    html.dark .main::before {
+      background:
+        radial-gradient(circle at 18% 20%, rgba(214, 57, 76, 0.18) 0, transparent 28%),
+        radial-gradient(circle at 82% 14%, rgba(214, 57, 76, 0.12) 0, transparent 24%),
+        linear-gradient(180deg, rgba(23,23,23,0.94) 0%, rgba(28,28,28,0.98) 100%);
     }
 
     .shell {
@@ -267,9 +268,7 @@
       overflow: hidden;
     }
 
-    @media (prefers-color-scheme: dark) {
-      .visual-card { border-color: rgba(214, 57, 76, 0.18); }
-    }
+    html.dark .visual-card { border-color: rgba(214, 57, 76, 0.18); }
 
 
     /* ── Visual card contents ──────────────────────────────── */
@@ -342,6 +341,257 @@
       .copy h1 { font-size: clamp(2.5rem, 14vw, 3.6rem); }
       .copy p  { font-size: 1rem; }
       .visual-card { width: 100%; padding: 22px; }
+    }
+
+    /* ── Theme toggle (mirrors ThemeToggle.css) ────────────── */
+    .theme-toggle {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      z-index: 200;
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      border: 1.5px solid #ddd;
+      background: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      padding: 0;
+      color: #f5a623;
+      transition: background 0.3s, border-color 0.3s, color 0.3s;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    }
+
+    .theme-toggle svg { width: 20px; height: 20px; }
+    .theme-toggle:hover { border-color: var(--red); }
+
+    html.dark .theme-toggle {
+      background: #2a2a2a;
+      border-color: #555;
+      color: #ccc;
+    }
+
+    /* ── Feedback tab + modal (mirrors FeedbackTab.css) ────── */
+    .feedback-tab {
+      position: fixed;
+      left: 0;
+      bottom: 80px;
+      z-index: 200;
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      background: var(--red);
+      color: #fff;
+      font-family: 'Nunito', sans-serif;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      padding: 14px 8px;
+      border-radius: 0 6px 6px 0;
+      cursor: pointer;
+      border: none;
+      box-shadow: 2px 2px 8px rgba(0,0,0,0.15);
+      transition: background 0.2s;
+    }
+
+    .feedback-tab:hover { background: var(--red-dark); }
+
+    .feedback-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 300;
+      background: rgba(0, 0, 0, 0.35);
+      display: none;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 24px;
+    }
+
+    .feedback-overlay.open { display: flex; }
+
+    .feedback-modal {
+      position: relative;
+      background: #fff;
+      border-radius: 16px;
+      /* 360px - 56px padding = 304px content, fits the fixed 300px-wide
+         Turnstile iframe without a horizontal scrollbar */
+      width: 360px;
+      max-height: 90vh;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 32px 28px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.18);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      font-family: 'Nunito', sans-serif;
+    }
+
+    .feedback-close {
+      position: absolute;
+      top: 14px;
+      right: 16px;
+      background: none;
+      border: none;
+      font-size: 1.5rem;
+      color: #999;
+      cursor: pointer;
+      line-height: 1;
+      transition: color 0.2s;
+    }
+
+    .feedback-close:hover { color: #333; }
+
+    .feedback-mascot { margin-bottom: 16px; }
+    .feedback-mascot-img { width: 100px; height: auto; object-fit: contain; }
+
+    .feedback-title {
+      font-size: 1.2rem;
+      font-weight: 900;
+      color: #333;
+      margin-bottom: 6px;
+      text-align: center;
+    }
+
+    .feedback-subtitle {
+      font-size: 0.85rem;
+      color: #888;
+      text-align: center;
+      line-height: 1.45;
+      margin-bottom: 24px;
+    }
+
+    .feedback-error {
+      display: none;
+      width: 100%;
+      background: #fef0f0;
+      color: var(--red);
+      font-size: 0.82rem;
+      font-weight: 700;
+      padding: 10px 14px;
+      border-radius: 8px;
+      margin-bottom: 14px;
+      text-align: center;
+    }
+
+    .feedback-label {
+      align-self: flex-start;
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: #555;
+      margin-bottom: 6px;
+      width: 100%;
+    }
+
+    .feedback-required { color: var(--red); }
+
+    .feedback-input,
+    .feedback-textarea,
+    .feedback-select {
+      width: 100%;
+      border: 1.5px solid #e0e0e0;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-family: 'Nunito', sans-serif;
+      font-size: 0.88rem;
+      color: #333;
+      background: #fff;
+      outline: none;
+      margin-bottom: 18px;
+      transition: border-color 0.2s;
+    }
+
+    .feedback-input:focus,
+    .feedback-textarea:focus,
+    .feedback-select:focus { border-color: var(--red); }
+
+    .feedback-textarea { resize: vertical; min-height: 90px; }
+
+    .feedback-input::placeholder,
+    .feedback-textarea::placeholder { color: #bbb; }
+
+    .feedback-turnstile {
+      margin: 12px 0 16px;
+      display: flex;
+      justify-content: center;
+      min-height: 70px;
+    }
+
+    .feedback-submit {
+      background: var(--red);
+      color: #fff;
+      border: none;
+      border-radius: 24px;
+      padding: 10px 36px;
+      font-family: 'Nunito', sans-serif;
+      font-size: 0.9rem;
+      font-weight: 700;
+      cursor: pointer;
+      margin-top: 4px;
+      transition: background 0.2s;
+    }
+
+    .feedback-submit:hover { background: var(--red-dark); }
+    .feedback-submit:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .feedback-success {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      padding: 12px 0;
+    }
+
+    .feedback-success-icon {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: var(--red);
+      color: #fff;
+      font-size: 1.6rem;
+      font-weight: 900;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 16px;
+    }
+
+    .feedback-success-msg {
+      font-size: 0.88rem;
+      color: #777;
+      line-height: 1.5;
+      margin-top: 6px;
+      margin-bottom: 24px;
+    }
+
+    html.dark .feedback-modal { background: #242424; }
+    html.dark .feedback-close { color: #777; }
+    html.dark .feedback-close:hover { color: #e0e0e0; }
+    html.dark .feedback-title { color: #e0e0e0; }
+    html.dark .feedback-subtitle { color: #999; }
+    html.dark .feedback-label { color: #bbb; }
+    html.dark .feedback-input,
+    html.dark .feedback-textarea,
+    html.dark .feedback-select {
+      background: #2a2a2a;
+      border-color: #444;
+      color: #e0e0e0;
+    }
+    html.dark .feedback-input::placeholder,
+    html.dark .feedback-textarea::placeholder { color: #666; }
+    html.dark .feedback-success-msg { color: #999; }
+    html.dark .feedback-error { background: #3a2020; color: #e06070; }
+
+    /* Same mobile behavior as the main site */
+    @media (max-width: 768px) {
+      .theme-toggle { display: none; }
+      .feedback-tab { display: none; }
+      .feedback-overlay { justify-content: center; padding: 16px; }
+      .feedback-modal { width: 100%; max-width: 100%; max-height: 85vh; padding: 28px 20px; }
     }
   </style>
 </head>
@@ -423,6 +673,61 @@
 
   </div>
 
+  <button class="feedback-tab" id="feedback-open">Feedback</button>
+  <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode"></button>
+
+  <div class="feedback-overlay" id="feedback-overlay">
+    <div class="feedback-modal">
+      <button class="feedback-close" id="feedback-close" aria-label="Close">&times;</button>
+
+      <div id="feedback-form">
+        <div style="display:flex;flex-direction:column;align-items:center;">
+          <div class="feedback-mascot">
+            <img src="/logo.jpg" alt="RateMyHusky Mascot" class="feedback-mascot-img" />
+          </div>
+          <h2 class="feedback-title">Feedback Form</h2>
+          <p class="feedback-subtitle">Spotted something off? Got ideas? We'd love to hear from you.</p>
+        </div>
+
+        <p class="feedback-error" id="feedback-error"></p>
+
+        <label class="feedback-label">Type of Feedback <span class="feedback-required">*</span></label>
+        <select class="feedback-select" id="feedback-type">
+          <option value="" disabled selected>Select Feedback Type</option>
+          <option value="bug">Bug Report</option>
+          <option value="feature">Feature Request</option>
+          <option value="missing">Missing Data</option>
+          <option value="incorrectdata">Incorrect Data</option>
+          <option value="general">General Feedback</option>
+        </select>
+
+        <label class="feedback-label">Description <span class="feedback-required">*</span></label>
+        <textarea class="feedback-textarea" id="feedback-description" rows="4"
+          placeholder="Describe your feedback here."></textarea>
+
+        <label class="feedback-label">Email (Optional)</label>
+        <input class="feedback-input" id="feedback-email" type="email"
+          placeholder="How should we contact you?" />
+
+        <div class="feedback-turnstile" id="feedback-turnstile"></div>
+
+        <div style="display:flex;justify-content:center;">
+          <button class="feedback-submit" id="feedback-submit" disabled>Submit</button>
+        </div>
+      </div>
+
+      <div class="feedback-success" id="feedback-success">
+        <div class="feedback-success-icon">&check;</div>
+        <h2 class="feedback-title">Thank You!</h2>
+        <p class="feedback-success-msg">
+          We've received your feedback and appreciate you taking the time to
+          help us improve RateMyHusky.
+        </p>
+        <button class="feedback-submit" id="feedback-done">Done</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     (function () {
       var text     = document.getElementById('eta-text');
@@ -477,6 +782,157 @@
           if (res.ok && !res.redirected) location.replace('/');
         }).catch(function () { /* offline / backend down: keep waiting */ });
       }, 15000);
+    })();
+  </script>
+
+  <script>
+    // ── Theme toggle (same .dark class + localStorage as the site) ──
+    (function () {
+      var root = document.documentElement;
+      var btn = document.getElementById('theme-toggle');
+      var SUN = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>';
+      var MOON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
+      function render() { btn.innerHTML = root.classList.contains('dark') ? MOON : SUN; }
+      btn.addEventListener('click', function () {
+        var dark = !root.classList.contains('dark');
+        root.classList.toggle('dark', dark);
+        localStorage.setItem('theme', dark ? 'dark' : 'light');
+        render();
+      });
+      render();
+    })();
+
+    // ── Feedback modal (mirrors FeedbackTab.tsx; /api/feedback stays
+    //    open during maintenance via middleware.ts) ──
+    (function () {
+      var TURNSTILE_SITE_KEY = '0x4AAAAAAC4C3FpTf-vF6WH0';
+
+      var overlay = document.getElementById('feedback-overlay');
+      var form = document.getElementById('feedback-form');
+      var success = document.getElementById('feedback-success');
+      var errorBox = document.getElementById('feedback-error');
+      var typeEl = document.getElementById('feedback-type');
+      var descEl = document.getElementById('feedback-description');
+      var emailEl = document.getElementById('feedback-email');
+      var submitBtn = document.getElementById('feedback-submit');
+      var tsContainer = document.getElementById('feedback-turnstile');
+      var widgetId = null;
+      var tsToken = '';
+      var tsPoll = null;
+
+      var placeholders = {
+        bug: 'Describe the bug. What happened, and what did you expect to happen?',
+        feature: 'What feature would you like to see? Describe what it would do and why it would be useful.',
+        missing: 'What data is missing? Please include the professor name and any relevant links.',
+        incorrectdata: 'What data is incorrect? Please include the professor name and what the correct information should be.',
+        general: 'Share your thoughts, suggestions, or anything else on your mind.'
+      };
+
+      typeEl.addEventListener('change', function () {
+        descEl.placeholder = placeholders[typeEl.value] || 'Describe your feedback here.';
+      });
+
+      function renderTurnstile() {
+        if (!window.turnstile) return;
+        if (widgetId !== null) { window.turnstile.remove(widgetId); widgetId = null; }
+        widgetId = window.turnstile.render(tsContainer, {
+          sitekey: TURNSTILE_SITE_KEY,
+          callback: function (token) { tsToken = token; submitBtn.disabled = false; },
+          'expired-callback': function () { tsToken = ''; submitBtn.disabled = true; },
+          theme: document.documentElement.classList.contains('dark') ? 'dark' : 'light',
+          size: 'normal'
+        });
+      }
+
+      function showError(msg) {
+        errorBox.textContent = msg;
+        errorBox.style.display = msg ? 'block' : 'none';
+      }
+
+      function openModal() {
+        overlay.classList.add('open');
+        if (window.turnstile) {
+          renderTurnstile();
+        } else {
+          tsPoll = setInterval(function () {
+            if (window.turnstile) { clearInterval(tsPoll); tsPoll = null; renderTurnstile(); }
+          }, 100);
+        }
+      }
+
+      function closeModal() {
+        overlay.classList.remove('open');
+        if (tsPoll) { clearInterval(tsPoll); tsPoll = null; }
+        if (widgetId !== null && window.turnstile) { window.turnstile.remove(widgetId); widgetId = null; }
+        tsToken = '';
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Submit';
+        showError('');
+        typeEl.value = '';
+        descEl.value = '';
+        emailEl.value = '';
+        form.style.display = '';
+        success.style.display = '';
+      }
+
+      document.getElementById('feedback-open').addEventListener('click', openModal);
+      document.getElementById('feedback-close').addEventListener('click', closeModal);
+      document.getElementById('feedback-done').addEventListener('click', closeModal);
+      overlay.addEventListener('click', function (e) {
+        if (e.target === overlay) closeModal();
+      });
+
+      submitBtn.addEventListener('click', function () {
+        if (!typeEl.value || !descEl.value.trim()) {
+          showError('Please select a feedback type and enter a description.');
+          return;
+        }
+        if (!tsToken) {
+          showError('Please complete the CAPTCHA verification.');
+          return;
+        }
+        showError('');
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Sending...';
+
+        fetch('/api/feedback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            feedbackType: typeEl.value,
+            description: descEl.value,
+            email: emailEl.value || undefined,
+            turnstileToken: tsToken
+          })
+        }).then(function (res) {
+          if (res.ok) {
+            form.style.display = 'none';
+            success.style.display = 'flex';
+            return;
+          }
+          return res.json().catch(function () { return {}; }).then(function (body) {
+            var msg = body.error || ('API ' + res.status);
+            if (res.status === 429 || msg.indexOf('limit') !== -1) {
+              showError('Daily feedback limit reached. Please try again tomorrow.');
+            } else if (msg.indexOf('Invalid email') !== -1) {
+              showError('Please enter a valid email address.');
+            } else if (msg.toLowerCase().indexOf('captcha') !== -1) {
+              showError('CAPTCHA verification failed. Please try again.');
+              if (widgetId !== null && window.turnstile) window.turnstile.reset(widgetId);
+              tsToken = '';
+            } else {
+              showError('Failed to send feedback. Please try again.');
+            }
+          });
+        }).catch(function () {
+          showError('Failed to send feedback. Please try again.');
+        }).then(function () {
+          if (submitBtn.textContent === 'Sending...') {
+            submitBtn.textContent = 'Submit';
+            submitBtn.disabled = !tsToken;
+          }
+        });
+      });
     })();
   </script>
 </body>
