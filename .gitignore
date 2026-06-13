@@ -1,4 +1,6 @@
-backend/Better_Scraper/output_data/trace_comments.csv
+backend/Better_Scraper/output_data
+scraper/data
+scraper/reddit_data
 .env
 backend/.env
 .vercel
