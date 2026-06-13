@@ -30,9 +30,6 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
-import jellyfish
-from rapidfuzz import fuzz, process
-
 # Windows consoles default to cp1252 and can't encode the status glyphs below.
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -226,28 +223,12 @@ class ProfessorIndex:
         # keys are normalized name_keys (already normalize_name'd), e.g. "anatoliy kuznetsov"
         self.by_full_name: Dict[str, Professor] = {}
         self.by_last_name: Dict[str, List[Professor]] = defaultdict(list)
-        self.by_metaphone: Dict[str, List[Professor]] = defaultdict(list)
         for p in professors:
             if p.name_key:
                 # Catalog is deduplicated; name_key is unique per prof.
                 self.by_full_name[p.name_key] = p
             if p.last_name:
                 self.by_last_name[p.last_name].append(p)
-                mp = jellyfish.metaphone(p.last_name)
-                if mp:
-                    self.by_metaphone[mp].append(p)
-        # Unique last names form the fuzzy-match corpus.
-        self.last_name_corpus: List[str] = sorted(self.by_last_name.keys())
-
-        # PERFORMANCE: fuzzy matching blocks on first letter. process.extract
-        # over all ~6.6k surnames per token is ~8ms; bucketing by initial cuts
-        # the corpus ~26x (~250 avg) and the full run from hours to minutes.
-        # Typos rarely change a surname's leading letter; the ones that do
-        # (homophones like C/K) are caught by the phonetic layer instead.
-        self.corpus_by_initial: Dict[str, List[str]] = defaultdict(list)
-        for s in self.last_name_corpus:
-            if s:
-                self.corpus_by_initial[s[0]].append(s)
 
 
 # Permissive on purpose. NEU has real 20xx-series courses (CS2000, DS2000, ...),
@@ -297,6 +278,20 @@ class Candidate:
 
 _CAP_RUN_RE = re.compile(r"\b([A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+)*)\b")
 
+# Surnames that are also common English words — a bare match on these is almost
+# always not about a professor ("check the Law", "on the Hill", "you"). They only
+# count when corroborated (first name / dept / course). Derived from the catalog
+# during calibration; deliberately EXCLUDES legit frequent surnames like chen/
+# wang/li/lee/kim/zhang/liu/smith (handled by collision->ambiguous instead).
+_COMMON_WORD_SURNAMES = frozenset({
+    "an", "bell", "bird", "black", "born", "bright", "brown", "can", "case",
+    "crane", "day", "fox", "gold", "gray", "green", "grey", "hall", "hart",
+    "he", "her", "high", "hill", "him", "hope", "i", "king", "law", "long",
+    "love", "man", "march", "mark", "may", "min", "moon", "noble", "page",
+    "poor", "rich", "rose", "sharp", "small", "south", "spring", "stone", "to",
+    "valley", "ward", "west", "white", "wolf", "wood", "you", "young",
+})
+
 
 def _ascii_fold_keep_case(text: str) -> str:
     """NFKD ASCII-fold and straighten curly quotes WITHOUT lowercasing.
@@ -316,7 +311,7 @@ def extract_tokens(text: str) -> Tuple[str, List[str]]:
 
     - normalized_text: lowercased/folded, for exact full-name + dept/firstname
       word-boundary checks.
-    - capitalized_tokens: each capitalized run, normalized (last/fuzzy/phonetic).
+    - capitalized_tokens: each capitalized run, normalized (for last-name match).
     """
     text = text or ""
     norm_text = normalize_name(text)
@@ -337,7 +332,7 @@ def _contains_word(norm_text: str, phrase: str) -> bool:
 def match_item(
     text: str, index: ProfessorIndex, course_map: Dict[str, Set[str]]
 ) -> List[Candidate]:
-    """Run Layers 1-5 over one item's text; return scored candidates.
+    """Run Layers 1-2 over one item's text; return scored candidates.
 
     A single professor may be emitted by more than one layer (e.g. exact_full
     AND lastname for a full-name mention). Callers must dedupe by name_key,
@@ -346,7 +341,7 @@ def match_item(
     norm_text, cap_tokens = extract_tokens(text)
     cands: List[Candidate] = []
 
-    # Course codes present in this item (used by L2 boost and L5).
+    # Course codes present in this item (used by L2 boost).
     codes_present = {f"{m.group(1)}{m.group(2)}"
                      for m in _COURSE_CODE_RE.finditer(text.upper())}
     course_keys_present: Set[str] = set()
@@ -379,62 +374,23 @@ def match_item(
             continue
         for prof in profs:
             conf = 0.85
-            # First-name / dept checks use word boundaries so short tokens
-            # ("is", "cs") don't match inside unrelated words. dept_norm is
-            # precomputed on the Professor to avoid re-normalizing in this hot
-            # loop (~9M calls over a full run).
-            if prof.first_name and _contains_word(norm_text, prof.first_name):
+            # Corroboration signals: first name present, dept present, or a
+            # course this prof teaches present.
+            has_first = bool(prof.first_name) and _contains_word(norm_text, prof.first_name)
+            has_dept = _contains_word(norm_text, prof.dept_norm)
+            has_course = prof.name_key in course_keys_present
+            if has_first:
                 conf = 0.97
-            if _contains_word(norm_text, prof.dept_norm):
+            if has_dept:
                 conf = min(1.0, conf + 0.05)
-            if prof.name_key in course_keys_present:
+            if has_course:
                 conf = max(conf, 0.98)
+            # Common-English-word surnames ("law", "hall", "you", ...) are a
+            # major false-positive source ("check the Law", "on the Hill"). A
+            # bare match on one only counts if corroborated by first/dept/course.
+            if last in _COMMON_WORD_SURNAMES and not (has_first or has_dept or has_course):
+                continue
             cands.append(Candidate(prof.name_key, conf, "lastname", last))
-
-    # Layer 3: fuzzy on capitalized tokens vs. same-initial surname bucket.
-    # Note: the 0.75 ceiling is intentionally below the default resolve
-    # threshold (0.80), so a fuzzy hit alone never auto-resolves — it needs
-    # corroboration or lands as `ambiguous`. Revisit during calibration (Task 11).
-    # Gates (all required for the full run to finish in minutes, not hours):
-    #   - len(tok_last) >= 4: 3-char tokens fuzzy-match too much noise.
-    #   - skip exact surnames: those are Layer 2's job.
-    #   - only the same-initial bucket: see ProfessorIndex.corpus_by_initial.
-    for token in cap_tokens:
-        tok_last = token.split()[-1]
-        if len(tok_last) < 4 or tok_last in index.by_last_name:
-            continue
-        bucket = index.corpus_by_initial.get(tok_last[0])
-        if not bucket:
-            continue
-        results = process.extract(
-            tok_last, bucket, scorer=fuzz.WRatio, score_cutoff=85, limit=3,
-        )
-        for match_last, score, _ in results:
-            profs = index.by_last_name.get(match_last, [])
-            if len(profs) != 1:
-                continue  # multi-hit fuzzy is too risky; skip
-            cands.append(Candidate(profs[0].name_key, (score / 100) * 0.75,
-                                   "fuzzy", token))
-
-    # Layer 4: phonetic (metaphone) on capitalized tokens.
-    for token in cap_tokens:
-        tok_last = token.split()[-1]
-        if tok_last in index.by_last_name:
-            continue  # exact spelling already handled by Layer 2
-        mp = jellyfish.metaphone(tok_last)
-        if not mp:
-            continue
-        profs = index.by_metaphone.get(mp, [])
-        if len(profs) != 1:
-            continue
-        if profs[0].last_name == tok_last:
-            continue  # exact spelling already handled
-        cands.append(Candidate(profs[0].name_key, 0.65, "phonetic", token))
-
-    # Layer 5: course-code standalone.
-    for code in codes_present:
-        for nk in course_map.get(code, set()):
-            cands.append(Candidate(nk, 0.70, "course_context", code))
 
     return cands
 
@@ -748,6 +704,49 @@ def _calib_row(source_id, text, c, name_by_key):
     }
 
 
+def golden_selftest(check) -> None:
+    """End-to-end assertions on real catalog at the locked default thresholds."""
+    if not os.path.exists(DEFAULT_BACKUP):
+        check("golden set (skipped, no backup)", True)
+        return
+    profs = load_catalog(DEFAULT_BACKUP)
+    index = ProfessorIndex(profs)
+    course_map = load_course_map(TRACE_COURSES_CSV, index)
+    def resolve(text):
+        return aggregate(match_item(text, index, course_map), 0.80, 0.10, 0.55)
+
+    # Pick a real prof with a distinctive (non-collision, non-stoplisted) surname.
+    distinctive = next(
+        p for p in profs
+        if len(index.by_last_name[p.last_name]) == 1
+        and p.last_name not in _COMMON_WORD_SURNAMES
+        and len(p.last_name) >= 5 and " " in p.name_key
+    )
+    # full name -> resolved to that prof (title-case the name_key so cap-run regex
+    # captures all parts; .name may have inconsistent casing in the catalog)
+    display = distinctive.name_key.title()
+    r = resolve(f"I really enjoyed Professor {display} this semester")
+    check("golden: full name resolves",
+          r is not None and r.status == "resolved" and r.name_key == distinctive.name_key)
+    # bare distinctive surname -> resolved (single prof, not stoplisted)
+    r = resolve(f"{distinctive.last_name.title()} was a fair grader")
+    check("golden: distinctive surname resolves",
+          r is not None and r.status == "resolved" and r.name_key == distinctive.name_key)
+    # a real collision surname bare -> ambiguous
+    collide = next(ln for ln, ps in index.by_last_name.items() if len(ps) >= 5 and ln not in _COMMON_WORD_SURNAMES)
+    r = resolve(f"{collide.title()} is the worst professor honestly")
+    check("golden: collision surname ambiguous",
+          r is not None and r.status == "ambiguous")
+    # pure noise -> no match
+    r = resolve("the dining hall food is terrible and the gym is crowded")
+    check("golden: noise sentence -> no resolved prof",
+          r is None or r.status == "ambiguous")
+    # a stoplisted common-word surname bare -> not resolved to a prof
+    r = resolve("you should check the law before signing the lease")
+    check("golden: common-word bare not resolved",
+          r is None or r.status != "resolved")
+
+
 def selftest() -> int:
     failures = 0
 
@@ -791,9 +790,6 @@ def selftest() -> int:
     check("full name index", idx.by_full_name.get("anatoliy kuznetsov") is not None)
     check("last name single", len(idx.by_last_name.get("kuznetsov", [])) == 1)
     check("last name collision", len(idx.by_last_name.get("kim", [])) == 2)
-    check("metaphone buckets collisions",
-          len(idx.by_metaphone.get(jellyfish.metaphone("kim"), [])) == 2)
-    check("fuzzy corpus has lastnames", "kuznetsov" in idx.last_name_corpus)
 
     course_map = {"CS3500": {"anatoliy kuznetsov"}}
 
@@ -809,14 +805,17 @@ def selftest() -> int:
     cands = match_item("David Kim was fair", idx, course_map)
     check("L2 firstname disambiguates", any(c.name_key == "david kim" and c.confidence >= 0.97 for c in cands))
 
-    cands = match_item("the CS3500 prof was tough", idx, course_map)
-    check("L5 course context", any(c.method == "course_context" and c.name_key == "anatoliy kuznetsov" for c in cands))
+    cands = match_item("Kuznetsov CS3500 was tough", idx, course_map)
+    check("course code boosts lastname", any(c.method == "lastname" and c.name_key == "anatoliy kuznetsov" and c.confidence >= 0.98 for c in cands))
 
-    cands = match_item("Kuzentsov graded hard", idx, course_map)
-    check("L3 fuzzy typo", any(c.method == "fuzzy" and c.name_key == "anatoliy kuznetsov" for c in cands))
-
-    cands = match_item("Cuznetzof was strict", idx, course_map)
-    check("L4 phonetic", any(c.method == "phonetic" for c in cands))
+    stop_fix = [Professor("john-law", "John Law", "john law", "Finance", "Business", 5, 5, 1)]
+    stop_idx = ProfessorIndex(stop_fix)
+    cands = match_item("I think the Law is unfair", stop_idx, {})
+    check("common-word surname bare dropped",
+          not any(c.method == "lastname" for c in cands))
+    cands = match_item("John Law was a great teacher", stop_idx, {})
+    check("common-word surname with firstname kept",
+          any(c.method == "lastname" and c.name_key == "john law" for c in cands))
 
     code = parse_course_code("ENGW3302:09 (Advanced Writing in Tech Prof) - Laurie Nardone")
     check("course code parsed", code == "ENGW3302")
@@ -881,6 +880,8 @@ def selftest() -> int:
     check("band low", confidence_band(0.60) == "0.55-0.65")
     check("band mid", confidence_band(0.81) == "0.75-0.85")
     check("band top", confidence_band(1.0) == "0.95-1.00")
+
+    golden_selftest(check)
 
     print(f"\n  {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures
