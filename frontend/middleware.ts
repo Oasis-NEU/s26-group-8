@@ -8,12 +8,11 @@
 //   can reject traffic that didn't come through Vercel.
 //
 // Env vars (set in Vercel project settings):
+//   RAILWAY_ORIGIN    — backend origin, e.g. https://xyz.up.railway.app
 //   MAINT_SIGNING_KEY — HMAC key for bypass tokens (mint: maintenance.py -invite)
 //   PROXY_SECRET      — shared secret the backend checks; also set on Railway
 
 import maintenance from './maintenance.config.json';
-
-const RAILWAY_ORIGIN = 'https://ratemyhusky-production-7d6a.up.railway.app';
 
 // Skip only the maintenance page itself, the assets it needs, and
 // crawler/AdSense files.
@@ -52,7 +51,14 @@ async function hasValidBypass(request: Request): Promise<boolean> {
 }
 
 async function proxyToBackend(request: Request, url: URL): Promise<Response> {
-  const target = new URL(url.pathname + url.search, RAILWAY_ORIGIN);
+  const origin = process.env.RAILWAY_ORIGIN;
+  if (!origin) {
+    return new Response(
+      JSON.stringify({ error: 'RAILWAY_ORIGIN is not configured' }),
+      { status: 503, headers: { 'content-type': 'application/json' } },
+    );
+  }
+  const target = new URL(url.pathname + url.search, origin);
 
   const headers = new Headers(request.headers);
   headers.delete('host');

@@ -124,6 +124,7 @@ def genkey():
     print("\nNow copy the values from .env into:")
     print("  Vercel  (project env vars): MAINT_SIGNING_KEY and PROXY_SECRET")
     print("  Railway (service env vars): PROXY_SECRET")
+    print("Vercel also needs RAILWAY_ORIGIN=https://<your-service>.up.railway.app")
     print("Vercel env changes apply on the next deploy; Railway restarts "
           "the service. Set Vercel first, deploy, then Railway.")
 

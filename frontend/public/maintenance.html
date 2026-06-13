@@ -160,7 +160,9 @@
     }
 
     /* ── Copy ──────────────────────────────────────────────── */
-    .copy { max-width: 580px; }
+    /* min-width: 0 lets grid shrink the columns below their content's
+       natural width on small screens instead of overflowing the page. */
+    .copy { max-width: 580px; min-width: 0; }
 
     .kicker {
       display: inline-flex;
@@ -183,13 +185,6 @@
       height: 8px;
       border-radius: 50%;
       background: currentColor;
-      /* pulse animation */
-      animation: pulse 2s ease-in-out infinite;
-    }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50%       { opacity: 0.5; transform: scale(0.7); }
     }
 
     .copy h1 {
@@ -198,6 +193,7 @@
       letter-spacing: -0.04em;
       color: var(--h1);
       margin-bottom: 18px;
+      overflow-wrap: break-word;
     }
 
     .copy p {
@@ -227,6 +223,7 @@
     .visual {
       position: relative;
       min-height: 100%;
+      min-width: 0;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -266,15 +263,9 @@
       z-index: 1;
       width: clamp(200px, 64%, 300px);
       filter: drop-shadow(0 14px 22px rgba(0, 0, 0, 0.12));
-      animation: float 5s ease-in-out infinite;
     }
 
-    @keyframes float {
-      0%, 100% { transform: translateY(0px); }
-      50%       { transform: translateY(-12px); }
-    }
-
-    /* Spinning gear badge */
+    /* Gear badge */
     .gear-badge {
       position: absolute;
       bottom: 22px;
@@ -287,15 +278,6 @@
       align-items: center;
       justify-content: center;
       box-shadow: 0 6px 20px rgba(214, 57, 76, 0.38);
-    }
-
-    .gear-spin {
-      animation: spin 4s linear infinite;
-      transform-origin: 35px 35px;
-    }
-
-    @keyframes spin {
-      to { transform: rotate(360deg); }
     }
 
     /* Wrench badge */
@@ -311,12 +293,6 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      animation: wrench-rock 3.5s ease-in-out infinite;
-    }
-
-    @keyframes wrench-rock {
-      0%, 100% { transform: rotate(-12deg); }
-      50%       { transform: rotate(12deg); }
     }
 
     /* ── Footer ────────────────────────────────────────────── */
@@ -367,7 +343,7 @@
 
           <div class="copy">
             <span class="kicker" id="kicker">Scheduled Maintenance</span>
-            <h1 id="headline">We'll be right&nbsp;back.</h1>
+            <h1 id="headline">We'll be right back.</h1>
             <p id="message">
               RateMyHusky is temporarily offline while we perform scheduled
               maintenance. We're working quickly to get things back up, thanks
@@ -389,10 +365,10 @@
               <!-- Husky (same asset as 404 page) -->
               <img src="/neu-husky-icon.png" alt="" class="maint-husky" />
 
-              <!-- Spinning gear badge -->
+              <!-- Gear badge -->
               <div class="gear-badge">
                 <svg width="38" height="38" viewBox="0 0 70 70" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <g class="gear-spin">
+                  <g>
                     <path d="M54.75,31.87 L62.85,32.07 L62.85,37.93 L54.75,38.13
                       L53.67,42.17 L60.57,46.39 L57.65,51.46 L50.54,47.59
                       L47.59,50.54 L51.46,57.65 L46.39,60.57 L42.17,53.67
@@ -455,7 +431,7 @@
       function enterOverrun() {
         if (timer) clearInterval(timer);
         kicker.textContent = 'Still working on it';
-        headline.innerHTML = 'Taking a little longer than&nbsp;expected.';
+        headline.textContent = 'Taking a little longer than expected.';
         message.textContent =
           'Maintenance is running a bit past our estimate — sorry about ' +
           'that. We’re wrapping up as fast as we can, and this page will ' +
