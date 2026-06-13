@@ -486,6 +486,74 @@ def aggregate(
     )
 
 
+def strip_fullname_prefix(fullname: str) -> str:
+    """Strip a reddit fullname prefix (t1_, t3_, ...) returning the bare id."""
+    return fullname.split("_", 1)[1] if "_" in (fullname or "") else (fullname or "")
+
+
+# Title is case-insensitive (Prof/PROF/prof/Dr.), but the initial stays strictly
+# [A-Z]: a real "Prof K" abbreviation capitalizes the initial, and keeping it
+# strict avoids matching lowercase noise like "prof k" mid-sentence.
+_PROF_INITIAL_RE = re.compile(r"\b(?i:prof|dr|professor|doctor)\.?\s+([A-Z])\b")
+_PRONOUN_RE = re.compile(
+    r"\b(he|she|they|him|her|them|the professor|the prof|this guy|this woman|"
+    r"the legend|the goat)\b", re.IGNORECASE)
+
+
+def has_context_trigger(text: str) -> bool:
+    """True if the text has a 'Prof X' initial or a bare pronoun/honorific."""
+    return bool(_PROF_INITIAL_RE.search(text or "") or _PRONOUN_RE.search(text or ""))
+
+
+CONV_CONTEXT_CONFIDENCE = 0.55  # base for context-only matches; review in calibration
+
+
+def resolve_conv_context(
+    text: str, thread_subjects: Set[str], index: ProfessorIndex, floor: float,
+) -> Optional[MatchResult]:
+    """Resolve a context-triggered item against the thread's resolved subjects.
+
+    Confidence is the fixed CONV_CONTEXT_CONFIDENCE (a single-signal layer, so
+    resolve_threshold/margin don't apply); the result is dropped if it falls
+    below `floor`, so raising the floor in calibration disables this layer.
+
+    - exactly one subject -> resolved (for 'Prof X', the initial must match that
+      subject's last-name initial, else drop).
+    - multiple subjects -> ambiguous with all of them.
+    - zero subjects (or below floor) -> None.
+    """
+    if not has_context_trigger(text) or not thread_subjects:
+        return None
+    if CONV_CONTEXT_CONFIDENCE < floor:
+        return None
+    subjects = sorted(thread_subjects)
+    if len(subjects) == 1:
+        nk = subjects[0]
+        m = _PROF_INITIAL_RE.search(text or "")
+        if m:
+            prof = index.by_full_name.get(nk)
+            initial = m.group(1).lower()
+            if not prof or not prof.last_name.startswith(initial):
+                return None
+        return MatchResult(name_key=nk, confidence=CONV_CONTEXT_CONFIDENCE,
+                           method="conv_context", matched_token="", status="resolved")
+    return MatchResult(name_key="", confidence=CONV_CONTEXT_CONFIDENCE,
+                       method="conv_context", matched_token="", status="ambiguous",
+                       candidate_keys=subjects)
+
+
+def read_csv_rows(path: str, limit: Optional[int] = None) -> Iterator[Dict[str, str]]:
+    """Yield rows from a reddit CSV with the large-field-safe parser."""
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
+        reader = csv.DictReader(f)
+        for i, row in enumerate(reader):
+            if limit is not None and i >= limit:
+                return
+            yield row
+
+
 def selftest() -> int:
     failures = 0
 
@@ -582,6 +650,33 @@ def selftest() -> int:
 
     r = agg([Candidate("x", 0.40, "phonetic", "x")])
     check("agg below floor -> None", r is None)
+
+    check("strip t3", strip_fullname_prefix("t3_9z0c3") == "9z0c3")
+    check("strip t1", strip_fullname_prefix("t1_abc") == "abc")
+
+    check("conv trigger prof initial", has_context_trigger("I think Prof K is fair"))
+    check("conv trigger pronoun", has_context_trigger("honestly he is the worst"))
+    check("conv no trigger", not has_context_trigger("the weather is nice today"))
+
+    # Single-subject thread resolves a triggered item.
+    subj = {"anatoliy kuznetsov"}
+    r = resolve_conv_context("he's brutal", subj, idx, floor=0.55)
+    check("conv single subject resolved", r is not None and r.status == "resolved"
+          and r.name_key == "anatoliy kuznetsov" and r.method == "conv_context")
+
+    # Prof-initial must match the subject's last initial.
+    r = resolve_conv_context("Prof K rocks", {"anatoliy kuznetsov"}, idx, floor=0.55)
+    check("conv prof-initial match", r is not None and r.status == "resolved")
+    r = resolve_conv_context("Prof S rocks", {"anatoliy kuznetsov"}, idx, floor=0.55)
+    check("conv prof-initial mismatch dropped", r is None)
+
+    # Two subjects -> ambiguous.
+    r = resolve_conv_context("he was great", {"jane kim", "david kim"}, idx, floor=0.55)
+    check("conv two subjects ambiguous", r is not None and r.status == "ambiguous")
+
+    # Floor above the conv-context confidence disables the layer.
+    r = resolve_conv_context("he's brutal", {"anatoliy kuznetsov"}, idx, floor=0.60)
+    check("conv dropped when below floor", r is None)
 
     print(f"\n  {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures
