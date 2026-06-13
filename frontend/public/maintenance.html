@@ -25,6 +25,21 @@
       }
     })();
   </script>
+  <!-- Google Analytics (same tag as the main site) so maintenance-page
+       visitors still show up in realtime reports -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-NY3WJ7WEKL"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-NY3WJ7WEKL');
+  </script>
+  <!-- Vercel Web Analytics (plain-HTML integration; the /_vercel path is
+       excluded from the maintenance gate in middleware.ts) -->
+  <script>
+    window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+  </script>
+  <script defer src="/_vercel/insights/script.js"></script>
   <link rel="icon" href="/logo.jpg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

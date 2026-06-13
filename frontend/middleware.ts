@@ -14,11 +14,11 @@
 
 import maintenance from './maintenance.config.json';
 
-// Skip only the maintenance page itself, the assets it needs, and
-// crawler/AdSense files.
+// Skip the maintenance page itself, the assets it needs, crawler/AdSense
+// files, and Vercel internals (analytics beacons, etc.).
 export const config = {
   matcher:
-    '/((?!maintenance\\.html|logo\\.jpg|neu-husky-icon\\.png|robots\\.txt|ads\\.txt).*)',
+    '/((?!maintenance\\.html|logo\\.jpg|neu-husky-icon\\.png|robots\\.txt|ads\\.txt|_vercel).*)',
 };
 
 // Bypass token: "<name>.<expiry-epoch-seconds>.<hex hmac-sha256 of "name.expiry">"
