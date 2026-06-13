@@ -12,14 +12,15 @@
     var MAINTENANCE_ENDS_AT = null;
     // ─────────────────────────────────────────────────────────
 
-    // Dev bypass: /maintenance.html?bypass=<secret> sets the cookie that the
-    // Vercel redirect rule checks, then drops you into the real site. A wrong
-    // value just bounces back here.
+    // Dev bypass: /maintenance.html?bypass=<signed-token> sets the cookie
+    // that middleware.ts verifies, then drops you into the real site. An
+    // invalid token just bounces back here. The token's own expiry is what's
+    // enforced; the cookie just needs to outlive it.
     (function () {
       var match = location.search.match(/[?&]bypass=([^&]+)/);
       if (match) {
         document.cookie = 'rmh_dev=' + match[1] +
-          '; path=/; max-age=604800; SameSite=Lax; Secure';
+          '; path=/; max-age=2592000; SameSite=Lax; Secure';
         location.replace('/');
       }
     })();

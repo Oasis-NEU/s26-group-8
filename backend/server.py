@@ -196,6 +196,20 @@ def block_bots():
         return jsonify({"error": "Forbidden"}), 403
 
 
+# Shared secret added by the Vercel middleware proxy (frontend/middleware.ts).
+# Unset = open (local dev / pre-rollout); set on Railway to lock the backend
+# to Vercel-proxied traffic only.
+PROXY_SECRET = os.getenv("PROXY_SECRET")
+
+
+@app.before_request
+def require_proxy_key():
+    if not PROXY_SECRET:
+        return
+    if request.headers.get("X-Proxy-Key") != PROXY_SECRET:
+        return jsonify({"error": "Forbidden"}), 403
+
+
 @app.before_request
 def check_origin():
     """Block API requests that don't originate from the frontend."""
