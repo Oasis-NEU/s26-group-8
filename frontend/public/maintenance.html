@@ -7,10 +7,22 @@
   <title>Maintenance — RateMyHusky</title>
   <script>
     // ── Maintenance Config ────────────────────────────────────
-    // Change MAINTENANCE_EST_TIME to whatever fits (e.g. "~30 minutes", "a few hours")
-    // Leave it as an empty string "" to hide the ETA badge entirely.
-    var MAINTENANCE_EST_TIME = "~10 minutes";
+    // Epoch-ms deadline for the countdown, stamped by maintenance.py.
+    // null = no countdown (generic "back shortly" badge).
+    var MAINTENANCE_ENDS_AT = null;
     // ─────────────────────────────────────────────────────────
+
+    // Dev bypass: /maintenance.html?bypass=<secret> sets the cookie that the
+    // Vercel redirect rule checks, then drops you into the real site. A wrong
+    // value just bounces back here.
+    (function () {
+      var match = location.search.match(/[?&]bypass=([^&]+)/);
+      if (match) {
+        document.cookie = 'rmh_dev=' + match[1] +
+          '; path=/; max-age=604800; SameSite=Lax; Secure';
+        location.replace('/');
+      }
+    })();
   </script>
   <link rel="icon" href="/logo.jpg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -353,31 +365,20 @@
         <div class="hero">
 
           <div class="copy">
-            <span class="kicker">Scheduled Maintenance</span>
-            <h1>We'll be right&nbsp;back.</h1>
-            <p>
+            <span class="kicker" id="kicker">Scheduled Maintenance</span>
+            <h1 id="headline">We'll be right&nbsp;back.</h1>
+            <p id="message">
               RateMyHusky is temporarily offline while we perform scheduled
               maintenance. We're working quickly to get things back up, thanks
               for your patience.
             </p>
-            <div class="eta" id="eta-badge" aria-live="polite">
+            <div class="eta" id="eta-badge">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <circle cx="12" cy="12" r="10"/>
                 <polyline points="12 6 12 12 16 14"/>
               </svg>
-              Expected downtime: <span id="eta-text">a few minutes</span>
+              <span id="eta-text">We&rsquo;ll be back shortly</span>
             </div>
-            <script>
-              (function () {
-                var badge = document.getElementById('eta-badge');
-                var text  = document.getElementById('eta-text');
-                if (!MAINTENANCE_EST_TIME) {
-                  badge.style.display = 'none';
-                } else {
-                  text.textContent = MAINTENANCE_EST_TIME;
-                }
-              })();
-            </script>
           </div>
 
           <div class="visual" aria-hidden="true">
@@ -429,5 +430,62 @@
     </footer>
 
   </div>
+
+  <script>
+    (function () {
+      var text     = document.getElementById('eta-text');
+      var kicker   = document.getElementById('kicker');
+      var headline = document.getElementById('headline');
+      var message  = document.getElementById('message');
+      var timer    = null;
+
+      function fmt(ms) {
+        var total = Math.floor(ms / 1000);
+        var h = Math.floor(total / 3600);
+        var m = Math.floor((total % 3600) / 60);
+        var s = total % 60;
+        var mm = (h > 0 && m < 10 ? '0' : '') + m;
+        var ss = (s < 10 ? '0' : '') + s;
+        return h > 0 ? h + ':' + mm + ':' + ss : m + ':' + ss;
+      }
+
+      // Countdown ran out but maintenance is still on: swap the page to a
+      // "running long" state instead of showing negative time.
+      function enterOverrun() {
+        if (timer) clearInterval(timer);
+        kicker.textContent = 'Still working on it';
+        headline.innerHTML = 'Taking a little longer than&nbsp;expected.';
+        message.textContent =
+          'Maintenance is running a bit past our estimate — sorry about ' +
+          'that. We’re wrapping up as fast as we can, and this page will ' +
+          'reload on its own the moment we’re back online.';
+        text.textContent = 'Hang tight — almost done';
+      }
+
+      function tick() {
+        var left = MAINTENANCE_ENDS_AT - Date.now();
+        if (left <= 0) {
+          enterOverrun();
+          return;
+        }
+        text.textContent = 'Estimated time remaining: ' + fmt(left);
+      }
+
+      if (MAINTENANCE_ENDS_AT) {
+        timer = setInterval(tick, 1000);
+        tick();
+      }
+      // No deadline set: the badge keeps its default "back shortly" text.
+
+      // Auto-recovery: while maintenance is on, '/' 307-redirects back to
+      // this page, so res.redirected is true. The moment maintenance is
+      // turned off, '/' serves the real site and we reload into it.
+      setInterval(function () {
+        fetch('/', { cache: 'no-store' }).then(function (res) {
+          if (res.ok && !res.redirected) location.replace('/');
+        }).catch(function () { /* offline / backend down: keep waiting */ });
+      }, 15000);
+    })();
+  </script>
 </body>
 </html>

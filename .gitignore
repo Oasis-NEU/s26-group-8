@@ -7,3 +7,4 @@ backend/.env
 backend/backups/
 __pycache__/
 *.pyc
+docs/

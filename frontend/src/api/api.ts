@@ -103,6 +103,18 @@ const _courseCache = new Map<string, CourseDetail>();
 type ProfessorFull = ProfessorProfile & ProfessorReviews;
 const _profFullCache = new Map<string, ProfessorFull>();
 
+/* ---- Maintenance detection ----
+   While maintenance mode is on, Vercel 307-redirects /api/* to
+   /maintenance.html and fetch() follows it silently. If that happened,
+   send this tab to the maintenance page and report true so callers bail. */
+export function maintenanceGuard(res: Response): boolean {
+  if (res.redirected && new URL(res.url).pathname === '/maintenance.html') {
+    window.location.replace('/maintenance.html');
+    return true;
+  }
+  return false;
+}
+
 /* ---- Fetchers ---- */
 async function get<T>(path: string): Promise<T> {
   const headers: Record<string, string> = {};
@@ -111,6 +123,7 @@ async function get<T>(path: string): Promise<T> {
     headers['Authorization'] = `Bearer ${token}`;
   }
   const res = await fetch(`${API_BASE}${path}`, { headers, cache: token ? 'no-cache' : 'default' });
+  if (maintenanceGuard(res)) throw new Error('Site is under maintenance');
   if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
   return res.json();
 }
@@ -331,6 +344,7 @@ export async function submitFeedback(payload: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+  if (maintenanceGuard(res)) throw new Error("Site is under maintenance");
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `API ${res.status}`);

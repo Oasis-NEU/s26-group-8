@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import type { ReactNode } from 'react';
+import { maintenanceGuard } from '../api/api';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 const TOKEN_KEY = 'auth_token';
@@ -50,8 +51,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return fetch(`${API_BASE}/api/auth/me`, {
       headers: { Authorization: `Bearer ${token}` },
     })
-      .then(res => (res.ok ? res.json() : null))
+      .then(res => {
+        // Maintenance redirect: tab is navigating away, keep the token.
+        if (maintenanceGuard(res)) return undefined;
+        return res.ok ? res.json() : null;
+      })
       .then(data => {
+        if (data === undefined) return;
         if (data) {
           setUser(data);
         } else {
@@ -146,12 +152,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     const token = getStoredToken();
-    await fetch(`${API_BASE}/api/auth/logout`, {
+    const res = await fetch(`${API_BASE}/api/auth/logout`, {
       method: 'POST',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     clearToken();
     setUser(null);
+    maintenanceGuard(res);
   }, []);
 
   return (

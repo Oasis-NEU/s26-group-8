@@ -1,22 +1,6 @@
 """
 Reddit subreddit scraper for r/NEU
 
-So this scraper avoids Reddit's own servers entirely and pulls from Arctic
-Shift (https://arctic-shift.photon-reddit.com), the public Pushshift
-successor: full historical posts AND comments by subreddit, date-windowed
-pagination, ~1000 requests/window, and an archive that is kept close to
-real-time. It is a separate archive service, so bulk pulling it places zero
-load on Reddit and carries no ban risk against your Reddit account/IP.
-
-Anti-ban / anti-stuck design
------------------------------
-  * Descriptive User-Agent with a contact (Arctic Shift asks for this).
-  * Honors X-Ratelimit-Remaining / X-Ratelimit-Reset and Retry-After.
-  * Exponential backoff + jitter on 429 / 422-timeout / 5xx.
-  * Conservative inter-request delay (default ~2 req/s).
-  * Checkpoint file: resumes from the last seen timestamp so an interruption or
-    a transient block never loses work and never re-fetches the whole archive.
-
 Usage
 -----
     python reddit_scrape.py                        # posts + comments, full history
