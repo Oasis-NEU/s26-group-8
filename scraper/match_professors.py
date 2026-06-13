@@ -236,6 +236,43 @@ class ProfessorIndex:
         self.last_name_corpus: List[str] = sorted(self.by_last_name.keys())
 
 
+# Permissive on purpose. NEU has real 20xx-series courses (CS2000, DS2000, ...),
+# so we must NOT exclude 4-digit "years" here — doing so drops 38 real codes.
+# When this runs over free-form Reddit text (Task 6), a phantom match like
+# "FALL2024" is harmless: it just won't exist in the course_map, so the
+# course_map.get(code, set()) lookup returns empty and contributes nothing.
+_COURSE_CODE_RE = re.compile(r"\b([A-Z]{2,4})[\s-]?(\d{4})\b")
+
+
+def parse_course_code(display_name: str) -> Optional[str]:
+    """Extract the course code (e.g. 'ENGW3302') from a TRACE displayName."""
+    m = _COURSE_CODE_RE.search(display_name or "")
+    return f"{m.group(1)}{m.group(2)}" if m else None
+
+
+def load_course_map(trace_csv: str, index: "ProfessorIndex") -> Dict[str, Set[str]]:
+    """Map course_code -> set of instructor name_keys that exist in the catalog.
+
+    Only instructors whose normalized name resolves to a catalog professor are
+    kept, so course context always lands on a real slug.
+    """
+    catalog_keys = set(index.by_full_name.keys())
+    course_map: Dict[str, Set[str]] = defaultdict(set)
+    if not os.path.exists(trace_csv):
+        return course_map
+    with open(trace_csv, "r", encoding="utf-8", errors="replace", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            code = parse_course_code(row.get("displayName", ""))
+            if not code:
+                continue
+            full = f"{row.get('instructorFirstName','')} {row.get('instructorLastName','')}"
+            nk = normalize_name(full)
+            if nk in catalog_keys:
+                course_map[code].add(nk)
+    return course_map
+
+
 def selftest() -> int:
     failures = 0
 
@@ -282,6 +319,13 @@ def selftest() -> int:
     check("metaphone buckets collisions",
           len(idx.by_metaphone.get(jellyfish.metaphone("kim"), [])) == 2)
     check("fuzzy corpus has lastnames", "kuznetsov" in idx.last_name_corpus)
+
+    code = parse_course_code("ENGW3302:09 (Advanced Writing in Tech Prof) - Laurie Nardone")
+    check("course code parsed", code == "ENGW3302")
+    check("course code none when absent", parse_course_code("random text") is None)
+    check("course code with space", parse_course_code("ENGW 3302 syllabus") == "ENGW3302")
+    check("course code rejects 3 digits", parse_course_code("CS 330") is None)
+    check("course code keeps 20xx", parse_course_code("CS2000 intro") == "CS2000")
 
     print(f"\n  {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures
