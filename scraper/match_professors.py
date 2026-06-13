@@ -439,6 +439,53 @@ def match_item(
     return cands
 
 
+@dataclass
+class MatchResult:
+    name_key: str                 # winning prof (resolved) or "" (ambiguous)
+    confidence: float
+    method: str
+    matched_token: str
+    status: str                   # "resolved" | "ambiguous"
+    candidate_keys: List[str] = field(default_factory=list)
+
+
+def aggregate(
+    candidates: List[Candidate], resolve_threshold: float, margin: float, floor: float
+) -> Optional[MatchResult]:
+    """Collapse candidates to one MatchResult, or None if nothing clears `floor`.
+
+    Keeps the max confidence per name_key, then decides:
+    - top >= resolve_threshold AND next-best more than `margin` below -> resolved
+    - else if anything >= floor -> ambiguous (all keys at/above floor)
+    - else -> None
+    """
+    if not candidates:
+        return None
+    best: Dict[str, Candidate] = {}
+    for c in candidates:
+        cur = best.get(c.name_key)
+        if cur is None or c.confidence > cur.confidence:
+            best[c.name_key] = c
+    ranked = sorted(best.values(), key=lambda c: c.confidence, reverse=True)
+    top = ranked[0]
+    if top.confidence < floor:
+        return None
+    # No second candidate -> gap is effectively infinite, so a lone candidate
+    # above the resolve threshold always resolves.
+    second = ranked[1].confidence if len(ranked) > 1 else 0.0
+    if top.confidence >= resolve_threshold and (top.confidence - second) > margin:
+        return MatchResult(
+            name_key=top.name_key, confidence=top.confidence, method=top.method,
+            matched_token=top.matched_token, status="resolved",
+        )
+    above_floor = [c for c in ranked if c.confidence >= floor]
+    return MatchResult(
+        name_key="", confidence=top.confidence, method=top.method,
+        matched_token=top.matched_token, status="ambiguous",
+        candidate_keys=[c.name_key for c in above_floor],
+    )
+
+
 def selftest() -> int:
     failures = 0
 
@@ -515,6 +562,26 @@ def selftest() -> int:
     check("course code with space", parse_course_code("ENGW 3302 syllabus") == "ENGW3302")
     check("course code rejects 3 digits", parse_course_code("CS 330") is None)
     check("course code keeps 20xx", parse_course_code("CS2000 intro") == "CS2000")
+
+    def agg(cs):
+        return aggregate(cs, resolve_threshold=0.80, margin=0.10, floor=0.55)
+
+    r = agg([Candidate("anatoliy kuznetsov", 1.0, "exact_full", "x")])
+    check("agg resolved single", r is not None and r.status == "resolved"
+          and r.name_key == "anatoliy kuznetsov")
+
+    r = agg([Candidate("jane kim", 0.85, "lastname", "kim"),
+             Candidate("david kim", 0.85, "lastname", "kim")])
+    check("agg ambiguous within margin", r is not None and r.status == "ambiguous"
+          and set(r.candidate_keys) == {"jane kim", "david kim"})
+
+    r = agg([Candidate("jane kim", 0.97, "lastname", "kim"),
+             Candidate("david kim", 0.85, "lastname", "kim")])
+    check("agg resolved beyond margin", r is not None and r.status == "resolved"
+          and r.name_key == "jane kim")
+
+    r = agg([Candidate("x", 0.40, "phonetic", "x")])
+    check("agg below floor -> None", r is None)
 
     print(f"\n  {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures
