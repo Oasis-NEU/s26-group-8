@@ -554,6 +554,112 @@ def read_csv_rows(path: str, limit: Optional[int] = None) -> Iterator[Dict[str, 
             yield row
 
 
+MENTION_FIELDS = [
+    "mention_id", "source_type", "source_id", "thread_id", "professor_slug",
+    "professor_name", "name_key", "confidence", "method", "matched_token",
+    "status", "candidate_slugs",
+]
+
+
+def mention_id(source_id: str, slug: str, token: str) -> str:
+    return hashlib.sha1(f"{source_id}|{slug}|{token}".encode("utf-8")).hexdigest()[:16]
+
+
+def _post_text(row: Dict[str, str]) -> str:
+    return f"{row.get('title','')} {row.get('selftext','')}".strip()
+
+
+def run(args: argparse.Namespace) -> None:
+    print("→ loading catalog…")
+    profs = load_catalog(args.backup)
+    index = ProfessorIndex(profs)
+    slug_by_key = {p.name_key: p.slug for p in profs}
+    name_by_key = {p.name_key: p.name for p in profs}
+    print(f"  {len(profs)} professors indexed")
+
+    course_map = load_course_map(TRACE_COURSES_CSV, index)
+    print(f"  {len(course_map)} course codes mapped")
+
+    resolve_threshold = args.resolve_threshold
+    margin = args.margin
+    floor = args.floor
+
+    # We only KEEP text for items that produced no confident match (candidates
+    # for pass 2), to bound memory. Resolved subjects are tracked per thread.
+    thread_subjects: Dict[str, Set[str]] = defaultdict(set)
+    pending: List[Tuple[str, str, str, str]] = []  # for pass-2 reconsideration
+
+    # try/finally (mirroring reddit_scrape.py) so a crash mid-run still flushes
+    # and closes the file — a leaked write handle blocks re-runs on Windows.
+    writer_fh = open(MENTIONS_CSV, "w", encoding="utf-8", newline="")
+    writer = csv.DictWriter(writer_fh, fieldnames=MENTION_FIELDS)
+    writer.writeheader()
+
+    def emit(source_type: str, source_id: str, thread_id: str, mr: MatchResult) -> None:
+        # Shared fields; the resolved/ambiguous branches only differ in the
+        # prof identity columns. A shared base avoids silently dropping a column
+        # in one branch if MENTION_FIELDS grows.
+        if mr.status == "resolved":
+            slug = slug_by_key.get(mr.name_key, "")
+            key_for_id, prof_slug, prof_name, nk, cand = (
+                slug, slug, name_by_key.get(mr.name_key, ""), mr.name_key, "")
+        else:  # ambiguous
+            cand = "|".join(slug_by_key.get(k, "") for k in mr.candidate_keys)
+            key_for_id, prof_slug, prof_name, nk = cand, "", "", ""
+        writer.writerow({
+            "mention_id": mention_id(source_id, key_for_id, mr.matched_token),
+            "source_type": source_type, "source_id": source_id,
+            "thread_id": thread_id, "professor_slug": prof_slug,
+            "professor_name": prof_name, "name_key": nk,
+            "confidence": round(mr.confidence, 3), "method": mr.method,
+            "matched_token": mr.matched_token, "status": mr.status,
+            "candidate_slugs": cand,
+        })
+
+    def handle(source_type: str, source_id: str, thread_id: str, text: str) -> None:
+        mr = aggregate(match_item(text, index, course_map),
+                       resolve_threshold, margin, floor)
+        if mr is None:
+            if not args.no_conv_context and has_context_trigger(text):
+                pending.append((source_type, source_id, thread_id, text))
+            return
+        emit(source_type, source_id, thread_id, mr)
+        if mr.status == "resolved":
+            thread_subjects[thread_id].add(mr.name_key)
+
+    try:
+        # ---- Pass 1: isolated resolution; collect rows + thread subjects ----
+        print("→ pass 1: matching posts and comments…")
+        n = 0
+        for row in read_csv_rows(POSTS_CSV, args.limit):
+            pid = row.get("id", "")
+            handle("post", pid, pid, _post_text(row))
+            n += 1
+        for row in read_csv_rows(COMMENTS_CSV, args.limit):
+            cid = row.get("id", "")
+            tid = strip_fullname_prefix(row.get("link_id", ""))
+            handle("comment", cid, tid, row.get("body", ""))
+            n += 1
+        print(f"  pass 1 done: {n} items, {len(pending)} pending context items")
+
+        # ---- Pass 2: conversation context ----
+        if not args.no_conv_context:
+            print("→ pass 2: conversation context…")
+            resolved2 = 0
+            for source_type, source_id, thread_id, text in pending:
+                subj = thread_subjects.get(thread_id)
+                if not subj:
+                    continue
+                mr = resolve_conv_context(text, subj, index, floor)
+                if mr is not None:
+                    emit(source_type, source_id, thread_id, mr)
+                    resolved2 += 1
+            print(f"  pass 2 done: {resolved2} context mentions emitted")
+    finally:
+        writer_fh.close()
+    print(f"\n  ✓ wrote mentions → {MENTIONS_CSV}")
+
+
 def selftest() -> int:
     failures = 0
 
@@ -678,6 +784,12 @@ def selftest() -> int:
     r = resolve_conv_context("he's brutal", {"anatoliy kuznetsov"}, idx, floor=0.60)
     check("conv dropped when below floor", r is None)
 
+    a = mention_id("c123", "jane-kim", "kim")
+    b = mention_id("c123", "jane-kim", "kim")
+    c = mention_id("c123", "david-kim", "kim")
+    check("mention_id stable", a == b)
+    check("mention_id distinct per prof", a != c)
+
     print(f"\n  {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures
 
@@ -697,10 +809,6 @@ def main() -> None:
     if args.selftest:
         sys.exit(selftest())
     run(args)
-
-
-def run(args: argparse.Namespace) -> None:
-    raise NotImplementedError  # filled in Task 9
 
 
 if __name__ == "__main__":
