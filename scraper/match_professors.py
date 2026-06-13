@@ -280,16 +280,22 @@ _CAP_RUN_RE = re.compile(r"\b([A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+)*)\b")
 
 # Surnames that are also common English words — a bare match on these is almost
 # always not about a professor ("check the Law", "on the Hill", "you"). They only
-# count when corroborated (first name / dept / course). Derived from the catalog
-# during calibration; deliberately EXCLUDES legit frequent surnames like chen/
-# wang/li/lee/kim/zhang/liu/smith (handled by collision->ambiguous instead).
+# count when corroborated (first name / dept / course). Derived from the full
+# 427k-comment corpus (surnames that frequently appear as common lowercase words)
+# plus month names and observed noise; deliberately EXCLUDES legit frequent
+# surnames like chen/wang/li/lee/kim/zhang/liu/smith (handled by
+# collision->ambiguous instead).
 _COMMON_WORD_SURNAMES = frozenset({
-    "an", "bell", "bird", "black", "born", "bright", "brown", "can", "case",
-    "crane", "day", "fox", "gold", "gray", "green", "grey", "hall", "hart",
-    "he", "her", "high", "hill", "him", "hope", "i", "king", "law", "long",
-    "love", "man", "march", "mark", "may", "min", "moon", "noble", "page",
-    "poor", "rich", "rose", "sharp", "small", "south", "spring", "stone", "to",
-    "valley", "ward", "west", "white", "wolf", "wood", "you", "young",
+    "ai", "an", "august", "bath", "black", "board", "book", "can", "case",
+    "charles", "crossing", "curry", "day", "dev", "don", "estabrook", "fan",
+    "fine", "form", "forsyth", "francisco", "french", "green", "hall", "hand",
+    "hands", "hastings", "he", "her", "high", "hill", "him", "hope", "house",
+    "i", "ireland", "israel", "jesus", "kerr", "law", "list", "little",
+    "london", "long", "love", "ma", "mac", "man", "march", "marino", "may",
+    "min", "money", "oh", "pa", "page", "park", "place", "poor", "post",
+    "power", "price", "re", "ready", "said", "small", "soon", "south",
+    "spring", "staff", "summer", "ta", "to", "washington", "west", "white",
+    "winter", "worth", "you",
 })
 
 
@@ -388,7 +394,8 @@ def match_item(
             # Common-English-word surnames ("law", "hall", "you", ...) are a
             # major false-positive source ("check the Law", "on the Hill"). A
             # bare match on one only counts if corroborated by first/dept/course.
-            if last in _COMMON_WORD_SURNAMES and not (has_first or has_dept or has_course):
+            needs_corroboration = last in _COMMON_WORD_SURNAMES or len(last) <= 2
+            if needs_corroboration and not (has_first or has_dept or has_course):
                 continue
             cands.append(Candidate(prof.name_key, conf, "lastname", last))
 
@@ -816,6 +823,16 @@ def selftest() -> int:
     cands = match_item("John Law was a great teacher", stop_idx, {})
     check("common-word surname with firstname kept",
           any(c.method == "lastname" and c.name_key == "john law" for c in cands))
+
+    # Very short surname needs corroboration too.
+    short_fix = [Professor("li-ta", "Li Ta", "li ta", "Music", "Arts", 4, 4, 1)]
+    short_idx = ProfessorIndex(short_fix)
+    cands = match_item("ha ta that was funny", short_idx, {})
+    check("short surname bare dropped",
+          not any(c.method == "lastname" for c in cands))
+    cands = match_item("Li Ta is a great teacher", short_idx, {})
+    check("short surname with firstname kept",
+          any(c.method == "lastname" and c.name_key == "li ta" for c in cands))
 
     code = parse_course_code("ENGW3302:09 (Advanced Writing in Tech Prof) - Laurie Nardone")
     check("course code parsed", code == "ENGW3302")
