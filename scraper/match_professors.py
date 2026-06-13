@@ -65,6 +65,64 @@ def normalize_name(name: Any) -> str:
     return s
 
 
+def parse_sql_values(body: str) -> List[List[Optional[str]]]:
+    """Parse the VALUES portion of an INSERT into a list of row value-lists.
+
+    `body` is everything after `VALUES`, e.g. "(1,'a'),(2,'b')". Quoted strings
+    are returned with surrounding quotes removed and '' un-escaped to '. The
+    unquoted literal NULL becomes None. Unquoted numerics are returned as their
+    raw (stripped) string; the caller coerces.
+    """
+    rows: List[List[Optional[str]]] = []
+    i, n = 0, len(body)
+    while i < n:
+        if body[i] != "(":
+            i += 1
+            continue
+        i += 1  # past '('
+        row: List[Optional[str]] = []
+        chars: List[str] = []
+        in_str = False
+        was_quoted = False
+        while i < n:
+            c = body[i]
+            if in_str:
+                if c == "'":
+                    if i + 1 < n and body[i + 1] == "'":  # escaped ''
+                        chars.append("'")
+                        i += 2
+                        continue
+                    in_str = False
+                    i += 1
+                    continue
+                chars.append(c)
+                i += 1
+                continue
+            # not in string
+            if c == "'":
+                in_str = True
+                was_quoted = True
+                i += 1
+                continue
+            if c in (",", ")"):
+                token = "".join(chars)
+                if not was_quoted and token.strip() == "NULL":
+                    row.append(None)
+                else:
+                    row.append(token if was_quoted else token.strip())
+                chars = []
+                was_quoted = False
+                if c == ")":
+                    i += 1
+                    break
+                i += 1
+                continue
+            chars.append(c)
+            i += 1
+        rows.append(row)
+    return rows
+
+
 def selftest() -> int:
     failures = 0
 
@@ -76,6 +134,18 @@ def selftest() -> int:
 
     check("normalize lowercases + folds", normalize_name("José  Ruiz") == "jose ruiz")
     check("normalize collapses ws", normalize_name("  a   b ") == "a b")
+
+    rows = parse_sql_values("(1,'a','b'),(2,'O''Brien',NULL)")
+    check("sql parse row count", len(rows) == 2)
+    check("sql parse plain", rows[0] == ["1", "a", "b"])
+    check("sql parse escaped quote", rows[1][1] == "O'Brien")
+    check("sql parse NULL -> None", rows[1][2] is None)
+    check("sql parse comma in string",
+          parse_sql_values("('a, b','c')")[0] == ["a, b", "c"])
+    check("sql parse paren in string",
+          parse_sql_values("('f(x)','y')")[0] == ["f(x)", "y"])
+    check("sql parse empty string", parse_sql_values("('')")[0] == [""])
+    check("sql parse quoted NULL stays string", parse_sql_values("('NULL')")[0] == ["NULL"])
 
     print(f"\n  {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures
