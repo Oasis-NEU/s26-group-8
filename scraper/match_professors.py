@@ -136,6 +136,10 @@ class Professor:
     num_ratings: int
     total_reviews: int
     total_comments: int
+    dept_norm: str = field(init=False, default="")
+
+    def __post_init__(self) -> None:
+        self.dept_norm = normalize_name(self.department) if self.department else ""
 
     @property
     def first_name(self) -> str:
@@ -235,6 +239,16 @@ class ProfessorIndex:
         # Unique last names form the fuzzy-match corpus.
         self.last_name_corpus: List[str] = sorted(self.by_last_name.keys())
 
+        # PERFORMANCE: fuzzy matching blocks on first letter. process.extract
+        # over all ~6.6k surnames per token is ~8ms; bucketing by initial cuts
+        # the corpus ~26x (~250 avg) and the full run from hours to minutes.
+        # Typos rarely change a surname's leading letter; the ones that do
+        # (homophones like C/K) are caught by the phonetic layer instead.
+        self.corpus_by_initial: Dict[str, List[str]] = defaultdict(list)
+        for s in self.last_name_corpus:
+            if s:
+                self.corpus_by_initial[s[0]].append(s)
+
 
 # Permissive on purpose. NEU has real 20xx-series courses (CS2000, DS2000, ...),
 # so we must NOT exclude 4-digit "years" here — doing so drops 38 real codes.
@@ -271,6 +285,158 @@ def load_course_map(trace_csv: str, index: "ProfessorIndex") -> Dict[str, Set[st
             if nk in catalog_keys:
                 course_map[code].add(nk)
     return course_map
+
+
+@dataclass
+class Candidate:
+    name_key: str
+    confidence: float
+    method: str
+    matched_token: str
+
+
+_CAP_RUN_RE = re.compile(r"\b([A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+)*)\b")
+
+
+def _ascii_fold_keep_case(text: str) -> str:
+    """NFKD ASCII-fold and straighten curly quotes WITHOUT lowercasing.
+
+    The cap-run regex needs capitalization intact, but Reddit/iOS text uses the
+    curly apostrophe U+2019 ("O'Brien") which the regex's straight-quote class
+    misses — silently dropping the 54 apostrophe-surname professors in the
+    catalog. Fold to straight ASCII first, preserving case for the regex.
+    """
+    s = unicodedata.normalize("NFKD", text)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return s.replace("‘", "'").replace("’", "'")
+
+
+def extract_tokens(text: str) -> Tuple[str, List[str]]:
+    """Return (normalized_text, capitalized_tokens).
+
+    - normalized_text: lowercased/folded, for exact full-name + dept/firstname
+      word-boundary checks.
+    - capitalized_tokens: each capitalized run, normalized (last/fuzzy/phonetic).
+    """
+    text = text or ""
+    norm_text = normalize_name(text)
+    folded = _ascii_fold_keep_case(text)
+    cap_tokens = [normalize_name(m.group(1)) for m in _CAP_RUN_RE.finditer(folded)]
+    cap_tokens = [t for t in cap_tokens if t]
+    return norm_text, cap_tokens
+
+
+def _contains_word(norm_text: str, phrase: str) -> bool:
+    """Word-boundary containment, so short tokens like dept 'is' don't match
+    inside 'this'/'discuss'. `phrase` must already be normalized."""
+    return bool(phrase) and bool(
+        re.search(r"\b" + re.escape(phrase) + r"\b", norm_text)
+    )
+
+
+def match_item(
+    text: str, index: ProfessorIndex, course_map: Dict[str, Set[str]]
+) -> List[Candidate]:
+    """Run Layers 1-5 over one item's text; return scored candidates.
+
+    A single professor may be emitted by more than one layer (e.g. exact_full
+    AND lastname for a full-name mention). Callers must dedupe by name_key,
+    keeping the max confidence — `aggregate` does this.
+    """
+    norm_text, cap_tokens = extract_tokens(text)
+    cands: List[Candidate] = []
+
+    # Course codes present in this item (used by L2 boost and L5).
+    codes_present = {f"{m.group(1)}{m.group(2)}"
+                     for m in _COURSE_CODE_RE.finditer(text.upper())}
+    course_keys_present: Set[str] = set()
+    for code in codes_present:
+        course_keys_present |= course_map.get(code, set())
+
+    # Layer 1: exact full name (word-boundary substring on normalized text).
+    # PERFORMANCE: never iterate all ~9k professors per item — over 500k items
+    # that is billions of regex calls. Only consider professors whose LAST name
+    # appears as a token in this item (candidate set is tiny), then confirm the
+    # full normalized name is present. Tradeoff: a fully-lowercased full name
+    # ("i had anatoliy kuznetsov") whose last name was never capitalized is not
+    # gated in — acceptable, since requiring capitalization cuts false positives
+    # and such mentions are rare.
+    last_tokens = {t.split()[-1] for t in cap_tokens if t}
+    full_checked: Set[str] = set()
+    for last in last_tokens:
+        for prof in index.by_last_name.get(last, []):
+            nk = prof.name_key
+            if nk in full_checked:
+                continue
+            full_checked.add(nk)
+            if re.search(r"\b" + re.escape(nk) + r"\b", norm_text):
+                cands.append(Candidate(nk, 1.00, "exact_full", nk))
+
+    # Layer 2: last name + disambiguation.
+    for last in last_tokens:
+        profs = index.by_last_name.get(last, [])
+        if not profs:
+            continue
+        for prof in profs:
+            conf = 0.85
+            # First-name / dept checks use word boundaries so short tokens
+            # ("is", "cs") don't match inside unrelated words. dept_norm is
+            # precomputed on the Professor to avoid re-normalizing in this hot
+            # loop (~9M calls over a full run).
+            if prof.first_name and _contains_word(norm_text, prof.first_name):
+                conf = 0.97
+            if _contains_word(norm_text, prof.dept_norm):
+                conf = min(1.0, conf + 0.05)
+            if prof.name_key in course_keys_present:
+                conf = max(conf, 0.98)
+            cands.append(Candidate(prof.name_key, conf, "lastname", last))
+
+    # Layer 3: fuzzy on capitalized tokens vs. same-initial surname bucket.
+    # Note: the 0.75 ceiling is intentionally below the default resolve
+    # threshold (0.80), so a fuzzy hit alone never auto-resolves — it needs
+    # corroboration or lands as `ambiguous`. Revisit during calibration (Task 11).
+    # Gates (all required for the full run to finish in minutes, not hours):
+    #   - len(tok_last) >= 4: 3-char tokens fuzzy-match too much noise.
+    #   - skip exact surnames: those are Layer 2's job.
+    #   - only the same-initial bucket: see ProfessorIndex.corpus_by_initial.
+    for token in cap_tokens:
+        tok_last = token.split()[-1]
+        if len(tok_last) < 4 or tok_last in index.by_last_name:
+            continue
+        bucket = index.corpus_by_initial.get(tok_last[0])
+        if not bucket:
+            continue
+        results = process.extract(
+            tok_last, bucket, scorer=fuzz.WRatio, score_cutoff=85, limit=3,
+        )
+        for match_last, score, _ in results:
+            profs = index.by_last_name.get(match_last, [])
+            if len(profs) != 1:
+                continue  # multi-hit fuzzy is too risky; skip
+            cands.append(Candidate(profs[0].name_key, (score / 100) * 0.75,
+                                   "fuzzy", token))
+
+    # Layer 4: phonetic (metaphone) on capitalized tokens.
+    for token in cap_tokens:
+        tok_last = token.split()[-1]
+        if tok_last in index.by_last_name:
+            continue  # exact spelling already handled by Layer 2
+        mp = jellyfish.metaphone(tok_last)
+        if not mp:
+            continue
+        profs = index.by_metaphone.get(mp, [])
+        if len(profs) != 1:
+            continue
+        if profs[0].last_name == tok_last:
+            continue  # exact spelling already handled
+        cands.append(Candidate(profs[0].name_key, 0.65, "phonetic", token))
+
+    # Layer 5: course-code standalone.
+    for code in codes_present:
+        for nk in course_map.get(code, set()):
+            cands.append(Candidate(nk, 0.70, "course_context", code))
+
+    return cands
 
 
 def selftest() -> int:
@@ -319,6 +485,29 @@ def selftest() -> int:
     check("metaphone buckets collisions",
           len(idx.by_metaphone.get(jellyfish.metaphone("kim"), [])) == 2)
     check("fuzzy corpus has lastnames", "kuznetsov" in idx.last_name_corpus)
+
+    course_map = {"CS3500": {"anatoliy kuznetsov"}}
+
+    cands = match_item("Professor Anatoliy Kuznetsov is great", idx, course_map)
+    check("L1 exact full", any(c.method == "exact_full" and c.confidence == 1.0 for c in cands))
+
+    cands = match_item("Kuznetsov is brutal", idx, course_map)
+    check("L2 single lastname", any(c.method == "lastname" and c.name_key == "anatoliy kuznetsov" for c in cands))
+
+    cands = match_item("Kim is a great teacher", idx, course_map)
+    check("L2 collision -> 2 candidates", len({c.name_key for c in cands if c.method == "lastname"}) == 2)
+
+    cands = match_item("David Kim was fair", idx, course_map)
+    check("L2 firstname disambiguates", any(c.name_key == "david kim" and c.confidence >= 0.97 for c in cands))
+
+    cands = match_item("the CS3500 prof was tough", idx, course_map)
+    check("L5 course context", any(c.method == "course_context" and c.name_key == "anatoliy kuznetsov" for c in cands))
+
+    cands = match_item("Kuzentsov graded hard", idx, course_map)
+    check("L3 fuzzy typo", any(c.method == "fuzzy" and c.name_key == "anatoliy kuznetsov" for c in cands))
+
+    cands = match_item("Cuznetzof was strict", idx, course_map)
+    check("L4 phonetic", any(c.method == "phonetic" for c in cands))
 
     code = parse_course_code("ENGW3302:09 (Advanced Writing in Tech Prof) - Laurie Nardone")
     check("course code parsed", code == "ENGW3302")
