@@ -30,6 +30,9 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
+import jellyfish
+from rapidfuzz import fuzz, process
+
 # Windows consoles default to cp1252 and can't encode the status glyphs below.
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -211,6 +214,28 @@ def load_catalog(backup_path: str) -> List[Professor]:
     return profs
 
 
+class ProfessorIndex:
+    """Lookup structures over the catalog for the matching layers."""
+
+    def __init__(self, professors: List[Professor]) -> None:
+        self.professors = professors  # kept for callers that iterate the raw list
+        # keys are normalized name_keys (already normalize_name'd), e.g. "anatoliy kuznetsov"
+        self.by_full_name: Dict[str, Professor] = {}
+        self.by_last_name: Dict[str, List[Professor]] = defaultdict(list)
+        self.by_metaphone: Dict[str, List[Professor]] = defaultdict(list)
+        for p in professors:
+            if p.name_key:
+                # Catalog is deduplicated; name_key is unique per prof.
+                self.by_full_name[p.name_key] = p
+            if p.last_name:
+                self.by_last_name[p.last_name].append(p)
+                mp = jellyfish.metaphone(p.last_name)
+                if mp:
+                    self.by_metaphone[mp].append(p)
+        # Unique last names form the fuzzy-match corpus.
+        self.last_name_corpus: List[str] = sorted(self.by_last_name.keys())
+
+
 def selftest() -> int:
     failures = 0
 
@@ -243,6 +268,20 @@ def selftest() -> int:
         check("derives last name", sample is not None and sample.last_name != "")
     else:
         check("catalog backup present (skipped)", True)
+
+    fixtures = [
+        Professor("anatoliy-kuznetsov", "Anatoliy Kuznetsov", "anatoliy kuznetsov",
+                  "Computer Science", "Khoury", 40, 40, 10),
+        Professor("jane-kim", "Jane Kim", "jane kim", "Biology", "COS", 5, 5, 1),
+        Professor("david-kim", "David Kim", "david kim", "Physics", "COS", 8, 8, 2),
+    ]
+    idx = ProfessorIndex(fixtures)
+    check("full name index", idx.by_full_name.get("anatoliy kuznetsov") is not None)
+    check("last name single", len(idx.by_last_name.get("kuznetsov", [])) == 1)
+    check("last name collision", len(idx.by_last_name.get("kim", [])) == 2)
+    check("metaphone buckets collisions",
+          len(idx.by_metaphone.get(jellyfish.metaphone("kim"), [])) == 2)
+    check("fuzzy corpus has lastnames", "kuznetsov" in idx.last_name_corpus)
 
     print(f"\n  {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures
