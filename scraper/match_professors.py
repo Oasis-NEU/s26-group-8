@@ -296,13 +296,49 @@ _COMMON_WORD_SURNAMES = frozenset({
     "charles", "crossing", "curry", "day", "dev", "don", "estabrook", "fan",
     "fine", "form", "forsyth", "francisco", "french", "green", "hall", "hand",
     "hands", "hastings", "he", "her", "high", "hill", "him", "hope", "house",
-    "i", "ireland", "israel", "jesus", "kerr", "law", "list", "little",
+    "i", "ireland", "israel", "jesus", "kerr", "king", "law", "list", "little",
     "london", "long", "love", "ma", "mac", "man", "march", "marino", "may",
     "min", "money", "oh", "pa", "page", "park", "place", "poor", "post",
     "power", "price", "re", "ready", "said", "small", "soon", "south",
-    "spring", "staff", "summer", "ta", "to", "washington", "west", "white",
-    "winter", "worth", "you",
+    "spring", "staff", "stewart", "summer", "ta", "to", "washington", "west",
+    "white", "willis", "winter", "worth", "you",
 })
+
+# Curated non-prof phrases that collide with common-word surnames (lowercased,
+# substring-matched on normalized text).
+_NONPROF_PHRASES = (
+    "burger king", "king husky", "isabella stewart gardner", "taco bell",
+    "tj max", "tj maxx", "law library", "ell hall", "dodge hall", "ryder hall",
+    "shillman hall", "richards hall", "snell library", "marino center",
+)
+# Words signaling a building/place/brand/decision context rather than a person.
+_NONPROF_CONTEXT = (
+    "library", "gym", "volleyball", "court", "center", "museum", "statue",
+    "negotiable", "worth it", "burger", "chief", "nupd",
+)
+# Signals the token really IS a professor — suppression must NOT fire.
+_PROF_SIGNAL_RE = re.compile(
+    r"\b(?i:prof|professor|dr|doctor|lecturer|teaches?|class with|took (?:him|her)|"
+    r"(?:his|her|their) class|grade[ds]?|exam|midterm|syllabus|lecture)\b")
+_COURSE_NEAR_RE = re.compile(r"\b[A-Za-z]{2,4}\s?\d{3,4}\b")
+
+
+def _suppress_common_word(last: str, text: str) -> bool:
+    """True if a common-word `last` should be dropped as a non-prof false positive.
+
+    Drops only on a clear non-prof signal AND absence of a prof signal. Anything
+    ambiguous is kept (returns False) to preserve recall.
+    """
+    if last not in _COMMON_WORD_SURNAMES:
+        return False
+    low = " ".join((text or "").lower().split())
+    if _PROF_SIGNAL_RE.search(text or "") or _COURSE_NEAR_RE.search(text or ""):
+        return False
+    if any(p in low for p in _NONPROF_PHRASES):
+        return True
+    if any(re.search(r"\b" + re.escape(w) + r"\b", low) for w in _NONPROF_CONTEXT):
+        return True
+    return False
 
 
 def _ascii_fold_keep_case(text: str) -> str:
@@ -473,6 +509,8 @@ def match_item(
                 # name in Layer 1, which is high-precision regardless of case.
                 if last in _COMMON_WORD_SURNAMES or len(last) <= 2:
                     continue
+            if not has_first and _suppress_common_word(last, text):
+                continue
             cands.append(Candidate(prof.name_key, conf, "lastname", last,
                                    lc_origin=lc_only))
 
@@ -689,7 +727,7 @@ def run(args: argparse.Namespace) -> None:
     resolve_threshold = args.resolve_threshold
     margin = args.margin
     floor = args.floor
-    policy = getattr(args, "policy", "full_only")
+    policy = getattr(args, "policy", "full_plus_corroborated")
 
     # We only KEEP text for items that produced no confident match (candidates
     # for pass 2), to bound memory. Resolved subjects are tracked per thread.
@@ -1242,6 +1280,23 @@ def selftest() -> int:
     check("override guard predicate false without exact_full",
           _has_exact_full([Candidate("x smith", 0.70, "lastname", "smith")]) is False)
 
+    # --- common-word surname suppression (drop only clear non-prof context) ---
+    sup = _suppress_common_word
+    check("drop: burger king", sup("king", "where can I find a Burger King on campus"))
+    check("drop: king husky", sup("king", "where is that King Husky statue"))
+    check("drop: isabella stewart gardner", sup("stewart", "free admission Isabella Stewart Gardner museum"))
+    check("drop: law library", sup("law", "go to the Law library it is quiet"))
+    check("drop: willis gym", sup("willis", "pickup volleyball in Willis anyone"))
+    check("drop: price negotiable", sup("price", "selling a ticket price is negotiable dm me"))
+    check("keep: prof price bro", not sup("price", "Prof. Price is such a bro in MUSC1112"))
+    check("keep: professor adams", not sup("adams", "professor Adams Brookelyn for econ 3416"))
+    check("keep: nik brown course", not sup("brown", "CS4300 with Nik Brown anyone taken it"))
+    check("keep: plain surname review", not sup("king", "King is a great lecturer took him last fall"))
+    check("suppress fires on bare worth it", sup("green", "is it worth it to take green"))
+    check("keep: courteous is not court (word boundary)", not sup("black", "Benjamin Black is courteous and kind"))
+    check("keep: his class is a prof signal", not sup("king", "his class with king was great"))
+    check("keep: exam is a prof signal", not sup("price", "the price exam was brutal"))
+
     check("strip t3", strip_fullname_prefix("t3_9z0c3") == "9z0c3")
     check("strip t1", strip_fullname_prefix("t1_abc") == "abc")
 
@@ -1323,6 +1378,55 @@ def selftest() -> int:
     return failures
 
 
+def experiment(args: argparse.Namespace) -> None:
+    """Compare promotion policies on a fixed corpus head; print a comparison table
+    and write a stratified hand-check sample per policy. Pass-1 emission only — the
+    policy affects only pass-1, so this isolates the comparison and stays fast."""
+    profs = load_catalog(args.backup)
+    index = ProfessorIndex(profs)
+    course_map = load_course_map(TRACE_COURSES_CSV, index)
+
+    items = []  # (source_type, source_id, thread_id, text)
+    for row in read_csv_rows(POSTS_CSV, args.sample):
+        items.append(("post", row.get("id", ""), row.get("id", ""), _post_text(row)))
+    for row in read_csv_rows(COMMENTS_CSV, args.sample):
+        items.append(("comment", row.get("id", ""),
+                      strip_fullname_prefix(row.get("link_id", "")), row.get("body", "")))
+    print(f"experiment over {len(items)} items (cap {args.sample} per source)\n")
+
+    # match_item is policy-agnostic; compute candidates once per item, reuse per policy.
+    precomputed = [(st, sid, text, match_item(text, index, course_map, args.match_lowercase))
+                   for st, sid, tid, text in items]
+
+    rows = []
+    for policy in PROMOTION_POLICIES:
+        resolved = multi_rows = multi_items = ambiguous = 0
+        sample_rows = []
+        for st, sid, text, cands in precomputed:
+            ems = select_emissions(cands, args.resolve_threshold, args.margin,
+                                   args.floor, policy)
+            res = [e for e in ems if e.status == "resolved"]
+            if len(res) > 1:
+                multi_items += 1
+                multi_rows += len(res)
+            resolved += len(res)
+            ambiguous += sum(1 for e in ems if e.status == "ambiguous")
+            if res:
+                e = res[0]
+                sample_rows.append((policy, st, sid, e.name_key, e.method, text[:160]))
+        rows.append((policy, resolved, multi_items, multi_rows, ambiguous))
+        with open(f"/tmp/experiment_sample_{policy}.tsv", "w", encoding="utf-8") as f:
+            f.write("policy\ttype\tid\tname_key\tmethod\ttext\n")
+            for r in sample_rows[:50]:
+                f.write("\t".join(str(x) for x in r) + "\n")
+
+    print(f"{'policy':24s} {'resolved':>9} {'multi_items':>12} "
+          f"{'multi_rows':>11} {'ambiguous':>10}")
+    for policy, resolved, mi, mr, amb in rows:
+        print(f"{policy:24s} {resolved:>9} {mi:>12} {mr:>11} {amb:>10}")
+    print("\nper-policy hand-check samples -> /tmp/experiment_sample_<policy>.tsv")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Match Reddit mentions to professors.")
     p.add_argument("--backup", default=DEFAULT_BACKUP)
@@ -1336,12 +1440,21 @@ def main() -> None:
     p.add_argument("--limit", type=int)
     p.add_argument("--calibrate", action="store_true")
     p.add_argument("--selftest", action="store_true", help="Run offline unit checks and exit")
+    p.add_argument("--experiment", action="store_true",
+                   help="Compare promotion policies on a fixed sample; print a table.")
+    p.add_argument("--policy", choices=PROMOTION_POLICIES, default="full_plus_corroborated",
+                   help="Multi-name promotion policy for run() (default full_plus_corroborated).")
+    p.add_argument("--sample", type=int, default=50000,
+                   help="Per-source item cap for --experiment (deterministic head).")
     args = p.parse_args()
 
     if args.selftest:
         sys.exit(selftest())
     if args.calibrate:
         calibrate(args)
+        return
+    if args.experiment:
+        experiment(args)
         return
     run(args)
 
