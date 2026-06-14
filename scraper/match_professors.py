@@ -594,9 +594,13 @@ def run(args: argparse.Namespace) -> None:
                 thread_surnames[thread_id][c.name_key.split()[-1]].add(c.name_key)
         mr = aggregate(cands, resolve_threshold, margin, floor)
         if mr is None:
-            if not args.no_conv_context:
-                # Queue for pass 2 if it has a context trigger OR any bare
-                # surname (the thread-anchor layer may resolve it).
+            # Only queue for pass 2 if a pass-2 layer could plausibly resolve it:
+            # a context trigger (conv_context) OR a known bare surname
+            # (thread_anchor). Queueing every unmatched item would make pass 2
+            # O(N) in retained text on a large corpus, defeating bounded memory.
+            if not args.no_conv_context and (
+                has_context_trigger(text) or has_anchorable_surname(text, index)
+            ):
                 pending.append((source_type, source_id, thread_id, text))
             return
         # Defer ambiguous results to pass 2 so thread_anchor can resolve them.
@@ -839,6 +843,21 @@ def resolve_thread_anchor(
     return best
 
 
+def has_anchorable_surname(text: str, index: "ProfessorIndex") -> bool:
+    """True if `text` contains a word that is a known professor surname.
+
+    Mirrors the gating in resolve_thread_anchor (whole word, length > 2, not a
+    common-word surname) so it predicts whether the thread-anchor layer could
+    plausibly use this item in pass 2. Used to decide whether an unmatched item
+    is worth queueing — at queue-time the thread's surname set isn't fully
+    populated yet, so we test against the full catalog instead.
+    """
+    for w in set(_SURNAME_WORD_RE.findall(normalize_name(text))):
+        if len(w) > 2 and w not in _COMMON_WORD_SURNAMES and w in index.by_last_name:
+            return True
+    return False
+
+
 def selftest() -> int:
     failures = 0
 
@@ -954,6 +973,20 @@ def selftest() -> int:
     check("conv trigger prof initial", has_context_trigger("I think Prof K is fair"))
     check("conv trigger pronoun", has_context_trigger("honestly he is the worst"))
     check("conv no trigger", not has_context_trigger("the weather is nice today"))
+
+    # Pass-2 queue gate: a known bare surname is anchorable even with no trigger
+    # (thread_anchor can resolve it), so it must still be queued. This is what
+    # keeps the bare-surname recall path alive — a trigger-only filter would
+    # wrongly drop it.
+    check("anchorable known surname", has_anchorable_surname("kuznetsov is brutal", idx))
+    check("anchorable rejects unknown word", not has_anchorable_surname("the exam was hard", idx))
+    check("anchorable rejects short word", not has_anchorable_surname("li is here", idx))
+    check("queue gate keeps bare surname (no trigger)",
+          not has_context_trigger("kuznetsov is brutal")
+          and has_anchorable_surname("kuznetsov is brutal", idx))
+    check("queue gate drops hopeless item",
+          not has_context_trigger("the parking was terrible")
+          and not has_anchorable_surname("the parking was terrible", idx))
 
     # Single-subject thread resolves a triggered item.
     subj = {"anatoliy kuznetsov"}

@@ -20,7 +20,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import jwt as pyjwt
 import requests as http_requests
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from datetime import datetime, timedelta, timezone
 from threading import Lock, Thread, Event
 import time
@@ -182,10 +182,27 @@ BLOCKED_USER_AGENTS = [
     "barkrowler", "dataforseobot",
 ]
 
+def _origin_host(value: str) -> str:
+    """Normalize a URL to 'scheme://host[:port]', lowercased, or '' if unparseable.
+
+    Strips any path/query (Referer carries a path; Origin does not) so the
+    comparison is on the web origin only. Returns '' when scheme or host is
+    missing, which never matches the allowlist.
+    """
+    p = urlparse(value or "")
+    if not p.scheme or not p.netloc:
+        return ""
+    return f"{p.scheme}://{p.netloc}".lower()
+
+
+# Compare against normalized origins so a stray trailing slash or path on either
+# side can't cause a lockout (or a startswith-style prefix bypass).
 ALLOWED_ORIGINS = {
-    FRONTEND_URL,
-    "http://localhost:5173",
-    "http://localhost:3000",
+    _origin_host(o) for o in (
+        FRONTEND_URL,
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ) if _origin_host(o)
 }
 
 
@@ -217,8 +234,10 @@ def check_origin():
         return  # allow OAuth redirects
     if request.method == "OPTIONS":
         return  # allow CORS preflight
-    origin = request.headers.get("Origin") or request.headers.get("Referer") or ""
-    if origin and not any(origin.startswith(o) for o in ALLOWED_ORIGINS):
+    raw = request.headers.get("Origin") or request.headers.get("Referer") or ""
+    if not raw:
+        return  # no Origin/Referer (e.g. same-origin GET) — nothing to check
+    if _origin_host(raw) not in ALLOWED_ORIGINS:
         return jsonify({"error": "Forbidden"}), 403
 
 
