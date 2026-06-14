@@ -274,6 +274,12 @@ class Candidate:
     confidence: float
     method: str
     matched_token: str
+    # True when this candidate was only found via the lowercase path (the surname
+    # never appeared capitalized). Such matches resolve themselves fine, but they
+    # are too weak to AUTHORIZE the thread-surname anchor cascade — a lowercase
+    # "jackson katz" / "salerno or katz" should not let every bare "katz" in the
+    # thread resolve to a Katz professor.
+    lc_origin: bool = False
 
 
 _CAP_RUN_RE = re.compile(r"\b([A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+)*)\b")
@@ -335,14 +341,37 @@ def _contains_word(norm_text: str, phrase: str) -> bool:
     )
 
 
+def _strip_possessive(token: str) -> str:
+    """Drop a trailing English possessive so a surname gates in normally.
+
+    "felleisen's" / "dupree's" -> the bare surname; "students'" -> "students".
+    Genuine apostrophe-surnames are unaffected: "o'brien"/"d'angelo" keep their
+    apostrophe (it is not at the possessive position), so this never corrupts
+    the 54 apostrophe-surname professors in the catalog.
+    """
+    if token.endswith("'s"):
+        return token[:-2]
+    if token.endswith("s'"):
+        return token[:-1]
+    return token
+
+
 def match_item(
-    text: str, index: ProfessorIndex, course_map: Dict[str, Set[str]]
+    text: str, index: ProfessorIndex, course_map: Dict[str, Set[str]],
+    match_lowercase: bool = False,
 ) -> List[Candidate]:
     """Run Layers 1-2 over one item's text; return scored candidates.
 
     A single professor may be emitted by more than one layer (e.g. exact_full
     AND lastname for a full-name mention). Callers must dedupe by name_key,
     keeping the max confidence — `aggregate` does this.
+
+    match_lowercase: when True, surnames written entirely lowercase ("john
+    rachlin overrated") also seed the layers — recovering casual mentions the
+    cap-token gate misses. Precision is preserved by only letting a lowercase
+    surname into Layer 2 when it is CORROBORATED (first name / dept / course);
+    a bare lowercase surname is never admitted, since lowercasing surnames
+    otherwise floods on dictionary-word names ("hammer", "boss", "rice").
     """
     norm_text, cap_tokens = extract_tokens(text)
     cands: List[Candidate] = []
@@ -354,30 +383,60 @@ def match_item(
     for code in codes_present:
         course_keys_present |= course_map.get(code, set())
 
+    # Surnames that anchor the candidate set. Normally only capitalized runs;
+    # with match_lowercase we add every lowercase word too, so a fully-lowercase
+    # surname can seed Layers 1-2. extract_tokens already lowercased norm_text.
+    # Strip a trailing possessive when gating surnames: "Felleisen's" should gate
+    # in Felleisen (the bare-surname/full-name boundary search in norm_text already
+    # matches before the apostrophe; only the candidate-set gate was missing it).
+    cap_last = {_strip_possessive(t.split()[-1]) for t in cap_tokens if t}
+    if match_lowercase:
+        last_tokens = set(cap_last)
+        last_tokens.update(
+            s for w in norm_text.split()
+            for s in (_strip_possessive(w),) if s in index.by_last_name
+        )
+    else:
+        last_tokens = cap_last
+
     # Layer 1: exact full name (word-boundary substring on normalized text).
     # PERFORMANCE: never iterate all ~9k professors per item — over 500k items
     # that is billions of regex calls. Only consider professors whose LAST name
     # appears as a token in this item (candidate set is tiny), then confirm the
-    # full normalized name is present. Tradeoff: a fully-lowercased full name
-    # ("i had anatoliy kuznetsov") whose last name was never capitalized is not
-    # gated in — acceptable, since requiring capitalization cuts false positives
-    # and such mentions are rare.
-    last_tokens = {t.split()[-1] for t in cap_tokens if t}
+    # full normalized name is present. A full-name match ("john rachlin") is
+    # high-precision regardless of case, so when match_lowercase is on it gates
+    # in lowercase full names too.
     full_checked: Set[str] = set()
     for last in last_tokens:
+        lc_only_last = match_lowercase and last not in cap_last
         for prof in index.by_last_name.get(last, []):
             nk = prof.name_key
             if nk in full_checked:
                 continue
             full_checked.add(nk)
+            # A full name reached only via the lowercase path whose first name is
+            # a bare initial ("d hope", "m rich") or a common word ("or katz",
+            # "an smith") is a fragment that collides with ordinary lowercase text
+            # ("i'd hope", "salerno or katz"). Require a real first name (>=2 char
+            # and not a stoplisted word) in that case. A capitalized "D Hope" /
+            # "Or Katz" is unaffected — capitalization already filters the noise.
+            if lc_only_last and (
+                len(prof.first_name) < 2 or prof.first_name in _COMMON_WORD_SURNAMES
+            ):
+                continue
             if re.search(r"\b" + re.escape(nk) + r"\b", norm_text):
-                cands.append(Candidate(nk, 1.00, "exact_full", nk))
+                cands.append(Candidate(nk, 1.00, "exact_full", nk,
+                                       lc_origin=lc_only_last))
 
     # Layer 2: last name + disambiguation.
     for last in last_tokens:
         profs = index.by_last_name.get(last, [])
         if not profs:
             continue
+        # A surname seen only in lowercase (not in any capitalized run) is the
+        # relaxed case: admit it ONLY with corroboration. Bare lowercase
+        # surnames are dropped below.
+        lc_only = match_lowercase and last not in cap_last
         for prof in profs:
             # Corroboration. A single-character first name ("D Hope") is too weak
             # to count — it would match almost any text.
@@ -398,12 +457,24 @@ def match_item(
             if has_course:
                 conf = max(conf, 0.98)
 
+            bare = not (has_first or has_dept or has_course)
             # Stoplisted or very short surnames are pure noise when bare — drop
             # them from the output entirely (not even ambiguous).
-            bare = not (has_first or has_dept or has_course)
             if bare and (last in _COMMON_WORD_SURNAMES or len(last) <= 2):
                 continue
-            cands.append(Candidate(prof.name_key, conf, "lastname", last))
+            if lc_only:
+                # A surname seen only lowercase needs corroboration to enter L2
+                # (a bare lowercase word is the false-positive flood we avoid)…
+                if bare:
+                    continue
+                # …and even corroborated, a lowercase COMMON WORD ("christian law",
+                # "d hope") corroborates too easily on coincidence, so it stays out
+                # of L2. Such professors are still recoverable via a lowercase FULL
+                # name in Layer 1, which is high-precision regardless of case.
+                if last in _COMMON_WORD_SURNAMES or len(last) <= 2:
+                    continue
+            cands.append(Candidate(prof.name_key, conf, "lastname", last,
+                                   lc_origin=lc_only))
 
     return cands
 
@@ -416,6 +487,76 @@ class MatchResult:
     matched_token: str
     status: str                   # "resolved" | "ambiguous"
     candidate_keys: List[str] = field(default_factory=list)
+    lc_origin: bool = False       # winning candidate came only via lowercase path
+
+
+PROMOTION_POLICIES = ("full_only", "full_plus_corroborated", "any_resolved")
+
+
+def _dedup_rank(candidates: List[Candidate]) -> List[Candidate]:
+    """Keep the max-confidence Candidate per name_key, ranked high->low."""
+    best: Dict[str, Candidate] = {}
+    for c in candidates:
+        cur = best.get(c.name_key)
+        if cur is None or c.confidence > cur.confidence:
+            best[c.name_key] = c
+    return sorted(best.values(), key=lambda c: c.confidence, reverse=True)
+
+
+def _is_promotable(cand: Candidate, policy: str, resolve_threshold: float) -> bool:
+    """Whether a deduped candidate becomes its own resolved row under `policy`."""
+    if policy == "full_only":
+        return cand.method == "exact_full"
+    if policy == "full_plus_corroborated":
+        return cand.method == "exact_full" or (
+            cand.method == "lastname" and cand.confidence >= 0.97)
+    if policy == "any_resolved":
+        return cand.confidence >= resolve_threshold
+    raise ValueError(f"unknown promotion policy {policy!r}")
+
+
+def _has_exact_full(candidates: List[Candidate]) -> bool:
+    """True if any candidate is an explicit in-text full name (exact_full)."""
+    return any(c.method == "exact_full" for c in candidates)
+
+
+def select_emissions(
+    candidates: List[Candidate], resolve_threshold: float, margin: float,
+    floor: float, policy: str = "full_only",
+) -> List[MatchResult]:
+    """Decide which rows to emit for one item's candidates.
+
+    - >=1 promotable candidate -> one resolved row per promotable (multi-name).
+    - else top candidate clears resolve_threshold with margin -> single resolved row.
+    - else >=1 candidate >= floor -> single ambiguous row.
+    - else -> [].
+    Dedupe-by-name_key (max confidence) matches aggregate().
+    """
+    if not candidates:
+        return []
+    ranked = _dedup_rank(candidates)
+    if ranked[0].confidence < floor:
+        return []
+
+    promotable = [c for c in ranked
+                  if c.confidence >= floor and _is_promotable(c, policy, resolve_threshold)]
+    if promotable:
+        return [MatchResult(name_key=c.name_key, confidence=c.confidence,
+                            method=c.method, matched_token=c.matched_token,
+                            status="resolved", lc_origin=c.lc_origin)
+                for c in promotable]
+
+    top = ranked[0]
+    second = ranked[1].confidence if len(ranked) > 1 else 0.0
+    if top.confidence >= resolve_threshold and (top.confidence - second) > margin:
+        return [MatchResult(name_key=top.name_key, confidence=top.confidence,
+                            method=top.method, matched_token=top.matched_token,
+                            status="resolved", lc_origin=top.lc_origin)]
+
+    above_floor = [c for c in ranked if c.confidence >= floor]
+    return [MatchResult(name_key="", confidence=top.confidence, method=top.method,
+                        matched_token=top.matched_token, status="ambiguous",
+                        candidate_keys=[c.name_key for c in above_floor])]
 
 
 def aggregate(
@@ -430,12 +571,7 @@ def aggregate(
     """
     if not candidates:
         return None
-    best: Dict[str, Candidate] = {}
-    for c in candidates:
-        cur = best.get(c.name_key)
-        if cur is None or c.confidence > cur.confidence:
-            best[c.name_key] = c
-    ranked = sorted(best.values(), key=lambda c: c.confidence, reverse=True)
+    ranked = _dedup_rank(candidates)
     top = ranked[0]
     if top.confidence < floor:
         return None
@@ -446,6 +582,7 @@ def aggregate(
         return MatchResult(
             name_key=top.name_key, confidence=top.confidence, method=top.method,
             matched_token=top.matched_token, status="resolved",
+            lc_origin=top.lc_origin,
         )
     above_floor = [c for c in ranked if c.confidence >= floor]
     return MatchResult(
@@ -552,6 +689,7 @@ def run(args: argparse.Namespace) -> None:
     resolve_threshold = args.resolve_threshold
     margin = args.margin
     floor = args.floor
+    policy = getattr(args, "policy", "full_only")
 
     # We only KEEP text for items that produced no confident match (candidates
     # for pass 2), to bound memory. Resolved subjects are tracked per thread.
@@ -587,29 +725,33 @@ def run(args: argparse.Namespace) -> None:
         })
 
     def handle(source_type: str, source_id: str, thread_id: str, text: str) -> None:
-        cands = match_item(text, index, course_map)
-        # Record full names seen in this thread (for pass-2 surname anchoring).
+        cands = match_item(text, index, course_map, args.match_lowercase)
+        # Seed thread surname anchors from capitalized full names only (a lowercase-only
+        # full name is too weak to authorize the cascade).
         for c in cands:
-            if c.method == "exact_full":
+            if c.method == "exact_full" and not c.lc_origin:
                 thread_surnames[thread_id][c.name_key.split()[-1]].add(c.name_key)
-        mr = aggregate(cands, resolve_threshold, margin, floor)
-        if mr is None:
-            # Only queue for pass 2 if a pass-2 layer could plausibly resolve it:
-            # a context trigger (conv_context) OR a known bare surname
-            # (thread_anchor). Queueing every unmatched item would make pass 2
-            # O(N) in retained text on a large corpus, defeating bounded memory.
+        ems = select_emissions(cands, resolve_threshold, margin, floor, policy)
+        if not ems:
             if not args.no_conv_context and (
                 has_context_trigger(text) or has_anchorable_surname(text, index)
             ):
                 pending.append((source_type, source_id, thread_id, text))
             return
-        # Defer ambiguous results to pass 2 so thread_anchor can resolve them.
-        if mr.status == "ambiguous" and not args.no_conv_context:
-            pending.append((source_type, source_id, thread_id, text))
+        resolved = [e for e in ems if e.status == "resolved"]
+        if not resolved:
+            # Single ambiguous result -> defer to pass 2 (thread_anchor may disambiguate).
+            if not args.no_conv_context:
+                pending.append((source_type, source_id, thread_id, text))
+                return
+            emit(source_type, source_id, thread_id, ems[0])
             return
-        emit(source_type, source_id, thread_id, mr)
-        if mr.status == "resolved":
-            thread_subjects[thread_id].add(mr.name_key)
+        # >=1 resolved emission: emit each; explicit names settle the item, so it is NOT
+        # queued for pass 2 -> conv_context can never override an in-text name.
+        for e in resolved:
+            emit(source_type, source_id, thread_id, e)
+            if not e.lc_origin:
+                thread_subjects[thread_id].add(e.name_key)
 
     try:
         # ---- Pass 1: isolated resolution; collect rows + thread subjects ----
@@ -640,18 +782,20 @@ def run(args: argparse.Namespace) -> None:
                         thread_subjects[thread_id].add(mr.name_key)
                     anchored2 += 1
                     continue
-                # Then conversation context (pronoun / "Prof X" against subjects).
+                # Then conversation context (pronoun / "Prof X" against subjects) — but
+                # NEVER override an explicit in-text full name. If match_item finds an
+                # exact_full here, fall through to the aggregate result instead of
+                # inventing a thread guess (guards the adam-ding -> marco-rainho bug).
+                cands2 = match_item(text, index, course_map)
                 subj = thread_subjects.get(thread_id)
-                if subj and has_context_trigger(text):
+                if subj and has_context_trigger(text) and not _has_exact_full(cands2):
                     mr = resolve_conv_context(text, subj, index, floor)
                     if mr is not None:
                         emit(source_type, source_id, thread_id, mr)
                         ctx2 += 1
                         continue
-                # Neither anchor nor context resolved — fall back to the pass-1
-                # aggregate result (may be ambiguous or None).
-                mr = aggregate(match_item(text, index, course_map),
-                               resolve_threshold, margin, floor)
+                # Neither anchor nor context resolved — fall back to pass-1 aggregate.
+                mr = aggregate(cands2, resolve_threshold, margin, floor)
                 if mr is not None:
                     emit(source_type, source_id, thread_id, mr)
                     if mr.status == "resolved":
@@ -795,6 +939,88 @@ def golden_selftest(check) -> None:
     r = resolve("you should check the law before signing the lease")
     check("golden: common-word bare not resolved",
           r is None or r.status != "resolved")
+
+    # --- match_lowercase flag (Experiment A: recover lowercase mentions) ---
+    def resolve_lc(text):
+        return aggregate(match_item(text, index, course_map, match_lowercase=True),
+                         0.80, 0.10, 0.55)
+    # a fully-lowercase full name is invisible by default, recovered with the flag
+    lc_full = distinctive.name_key  # already lowercase name_key
+    r = resolve(f"i had {lc_full} for class and it was great")
+    check("golden(lc): lowercase full name missed without flag",
+          r is None or r.name_key != distinctive.name_key)
+    r = resolve_lc(f"i had {lc_full} for class and it was great")
+    check("golden(lc): lowercase full name resolves with flag",
+          r is not None and r.status == "resolved" and r.name_key == distinctive.name_key)
+    # a corroborated lowercase surname (first name nearby) resolves with the flag
+    r = resolve_lc(f"{distinctive.first_name} {distinctive.last_name} was fair")
+    check("golden(lc): corroborated lowercase surname resolves",
+          r is not None and r.status == "resolved" and r.name_key == distinctive.name_key)
+    # a BARE lowercase common-word surname must STILL be dropped (no flood)
+    r = resolve_lc("you should check the law before signing the lease")
+    check("golden(lc): bare lowercase common-word still not resolved",
+          r is None or r.status != "resolved")
+    # a bare lowercase distinctive surname (no corroboration) does not resolve
+    r = resolve_lc(f"{distinctive.last_name} was a fair grader")
+    check("golden(lc): bare lowercase distinctive surname does not resolve",
+          r is None or r.status != "resolved")
+    # a lowercase COMMON-WORD surname, even corroborated by first name, must NOT
+    # resolve via lastname (e.g. "d hope", "christian law") — only via full name.
+    cw_prof = next(
+        (p for p in profs
+         if p.last_name in _COMMON_WORD_SURNAMES and len(p.first_name) >= 2
+         and len(index.by_last_name[p.last_name]) == 1),
+        None)
+    if cw_prof is not None:
+        r = resolve_lc(f"i really {cw_prof.last_name} the {cw_prof.first_name} idea here")
+        check("golden(lc): corroborated lowercase common-word not resolved via lastname",
+              r is None or r.status != "resolved" or r.method == "exact_full")
+    else:
+        check("golden(lc): common-word-surname case (skipped, none single)", True)
+    # a lowercase-only full name must NOT seed the thread-anchor cascade: its
+    # exact_full candidate carries lc_origin=True so handle() skips seeding.
+    lc_cands = match_item(f"i had {lc_full} last term", index, course_map,
+                          match_lowercase=True)
+    lc_full_cand = next((c for c in lc_cands
+                         if c.method == "exact_full" and c.name_key == lc_full), None)
+    check("golden(lc): lowercase full name is lc_origin (won't seed anchor)",
+          lc_full_cand is not None and lc_full_cand.lc_origin)
+    # but a CAPITALIZED full name still seeds (lc_origin False)
+    cap_cands = match_item(f"I had {distinctive.name_key.title()} last term",
+                           index, course_map, match_lowercase=True)
+    cap_full_cand = next((c for c in cap_cands
+                          if c.method == "exact_full" and c.name_key == lc_full), None)
+    check("golden(lc): capitalized full name still seeds anchor (not lc_origin)",
+          cap_full_cand is not None and not cap_full_cand.lc_origin)
+    # aggregate() must propagate lc_origin so handle() skips thread_subjects too.
+    r = aggregate(lc_cands, 0.80, 0.10, 0.55)
+    check("golden(lc): aggregate propagates lc_origin (won't seed conv_context)",
+          r is not None and r.status == "resolved" and r.lc_origin)
+
+    # --- possessive ("X's") gates the surname in, same as bare "X" ---
+    disp = distinctive.name_key.title()
+    # full name + possessive resolves
+    r = resolve(f"I loved {disp}'s class this term")
+    check("golden(poss): full name with possessive resolves",
+          r is not None and r.status == "resolved" and r.name_key == distinctive.name_key)
+    # bare surname possessive produces the same candidate as bare surname (gated in)
+    poss_c = match_item(f"{distinctive.last_name.title()}'s exam was fair",
+                        index, course_map)
+    bare_c = match_item(f"{distinctive.last_name.title()} exam was fair",
+                        index, course_map)
+    check("golden(poss): surname possessive gates same as bare surname",
+          {c.name_key for c in poss_c} == {c.name_key for c in bare_c}
+          and distinctive.name_key in {c.name_key for c in poss_c})
+    # an apostrophe-surname professor still resolves WITH a possessive (not corrupted)
+    ap = next((p for p in profs
+               if "'" in p.last_name and len(index.by_last_name[p.last_name]) == 1
+               and " " in p.name_key), None)
+    if ap is not None:
+        r = resolve(f"I had {ap.name_key.title()}'s class")
+        check("golden(poss): apostrophe-surname prof survives possessive",
+              r is not None and r.status == "resolved" and r.name_key == ap.name_key)
+    else:
+        check("golden(poss): apostrophe-surname case (skipped, none single)", True)
 
 
 _SURNAME_WORD_RE = re.compile(r"[a-z][a-z'-]*")
@@ -967,6 +1193,55 @@ def selftest() -> int:
     r = agg([Candidate("x", 0.40, "phonetic", "x")])
     check("agg below floor -> None", r is None)
 
+    # --- select_emissions: policy-driven multi-emission ---
+    two_full = [Candidate("adam ding", 1.0, "exact_full", "adam ding"),
+                Candidate("bogume jang", 1.0, "exact_full", "bogume jang")]
+    em = select_emissions(two_full, 0.80, 0.10, 0.55, policy="full_only")
+    check("two full names -> 2 resolved", len(em) == 2 and all(e.status == "resolved" for e in em))
+    check("two full names emit both keys",
+          {e.name_key for e in em} == {"adam ding", "bogume jang"})
+
+    mixed = [Candidate("adam ding", 1.0, "exact_full", "adam ding"),
+             Candidate("john smith", 0.70, "lastname", "smith")]
+    check("full_only emits only the full name",
+          [e.name_key for e in select_emissions(mixed, 0.80, 0.10, 0.55, policy="full_only")] == ["adam ding"])
+    check("any_resolved still only emits >=threshold",
+          [e.name_key for e in select_emissions(mixed, 0.80, 0.10, 0.55, policy="any_resolved")] == ["adam ding"])
+
+    check("full_plus_corroborated promotes 0.97 surnames",
+          [e.name_key for e in select_emissions(
+              [Candidate("jane kim", 0.97, "lastname", "kim"), Candidate("joe lee", 0.97, "lastname", "lee")],
+              0.80, 0.10, 0.55, policy="full_plus_corroborated")] == ["jane kim", "joe lee"])
+
+    check("lone full name -> 1 resolved",
+          len(select_emissions([Candidate("jane kim", 1.0, "exact_full", "jane kim")], 0.80, 0.10, 0.55, "full_only")) == 1)
+
+    two_bare = [Candidate("a smith", 0.70, "lastname", "smith"), Candidate("b smith", 0.70, "lastname", "smith")]
+    eb = select_emissions(two_bare, 0.80, 0.10, 0.55, "full_only")
+    check("two bare surnames -> 1 ambiguous", len(eb) == 1 and eb[0].status == "ambiguous")
+
+    check("nothing above floor -> empty",
+          select_emissions([Candidate("x", 0.40, "lastname", "x")], 0.80, 0.10, 0.55, "full_only") == [])
+
+    check("promotable below floor is not emitted",
+          select_emissions([Candidate("jane kim", 0.80, "lastname", "kim"),
+                            Candidate("adam ding", 0.54, "exact_full", "adam ding")],
+                           0.80, 0.10, 0.55, "full_only")[0].name_key == "jane kim")
+
+    check("select_emissions propagates lc_origin",
+          select_emissions([Candidate("k rachlin", 1.0, "exact_full", "k rachlin", lc_origin=True)],
+                           0.80, 0.10, 0.55, "full_only")[0].lc_origin is True)
+
+    # --- override guard: explicit full names beat thread conv_context ---
+    ding_jang = [Candidate("adam ding", 1.0, "exact_full", "adam ding"),
+                 Candidate("bogume jang", 1.0, "exact_full", "bogume jang")]
+    check("c67dmhj: emits ding+jang not a thread guess",
+          {e.name_key for e in select_emissions(ding_jang, 0.80, 0.10, 0.55, "full_only")}
+          == {"adam ding", "bogume jang"})
+    check("override guard predicate fires on exact_full", _has_exact_full(ding_jang) is True)
+    check("override guard predicate false without exact_full",
+          _has_exact_full([Candidate("x smith", 0.70, "lastname", "smith")]) is False)
+
     check("strip t3", strip_fullname_prefix("t3_9z0c3") == "9z0c3")
     check("strip t1", strip_fullname_prefix("t1_abc") == "abc")
 
@@ -1055,6 +1330,9 @@ def main() -> None:
     p.add_argument("--margin", type=float, default=0.10)
     p.add_argument("--floor", type=float, default=0.55)
     p.add_argument("--no-conv-context", action="store_true")
+    p.add_argument("--match-lowercase", action="store_true",
+                   help="Also match fully-lowercase surnames (corroborated only); "
+                        "recovers casual mentions the cap-token gate misses")
     p.add_argument("--limit", type=int)
     p.add_argument("--calibrate", action="store_true")
     p.add_argument("--selftest", action="store_true", help="Run offline unit checks and exit")
