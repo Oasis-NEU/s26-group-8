@@ -123,6 +123,13 @@ def parse_sql_values(body: str) -> List[List[Optional[str]]]:
     return rows
 
 
+# Generational/credential suffixes that are never a surname. Stripped from the
+# end of a name_key so the real surname indexes the professor.
+_NAME_SUFFIXES = frozenset({
+    "jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v",
+})
+
+
 @dataclass
 class Professor:
     slug: str
@@ -145,7 +152,14 @@ class Professor:
 
     @property
     def last_name(self) -> str:
-        parts = self.name_key.split()
+        # A generational suffix ("jr"/"iii"/…) is not a surname: it would index
+        # the prof under the suffix, so any bare "Jr."/"III" in Reddit text
+        # ("Martin Luther King Jr.") would falsely match. Skip trailing suffix
+        # tokens (and a dangling comma) to land on the real surname.
+        parts = [p.strip(",") for p in self.name_key.split()]
+        parts = [p for p in parts if p]
+        while len(parts) > 1 and parts[-1] in _NAME_SUFFIXES:
+            parts.pop()
         return parts[-1] if parts else ""
 
 
@@ -212,7 +226,53 @@ def load_catalog(backup_path: str) -> List[Professor]:
                 buf = []
     if skipped:
         print(f"  ⚠ load_catalog skipped {skipped} short rows")
+    before = len(profs)
+    profs = merge_suffix_duplicates(profs)
+    if len(profs) != before:
+        print(f"  merged {before - len(profs)} suffix-duplicate professor(s)")
     return profs
+
+
+def _suffix_stripped_key(name_key: str) -> str:
+    """name_key with any trailing generational-suffix tokens removed.
+
+    "richard melloni jr" / "martin schwarz, jr." -> "richard melloni" /
+    "martin schwarz". Used to detect catalog entries that are the same person
+    listed with and without the suffix.
+    """
+    parts = [p.strip(",") for p in name_key.split()]
+    parts = [p for p in parts if p]
+    while len(parts) > 1 and parts[-1] in _NAME_SUFFIXES:
+        parts.pop()
+    return " ".join(parts)
+
+
+def merge_suffix_duplicates(professors: List[Professor]) -> List[Professor]:
+    """Collapse same-person suffix variants to one canonical professor.
+
+    Two entries whose name_key is identical after stripping a trailing
+    generational suffix ("richard melloni" vs "richard melloni jr") are the same
+    person split across two catalog rows. Keep the richer entry (most ratings,
+    then most reviews) so the mention count isn't split and a single mention
+    can't emit both. Entries that merely share a surname are untouched — the key
+    includes the FULL stripped name, so distinct first names never merge.
+    """
+    groups: Dict[str, List[Professor]] = defaultdict(list)
+    order: List[str] = []
+    for p in professors:
+        k = _suffix_stripped_key(p.name_key)
+        if k not in groups:
+            order.append(k)
+        groups[k].append(p)
+    merged: List[Professor] = []
+    for k in order:
+        grp = groups[k]
+        if len(grp) == 1:
+            merged.append(grp[0])
+            continue
+        canonical = max(grp, key=lambda p: (p.num_ratings, p.total_reviews))
+        merged.append(canonical)
+    return merged
 
 
 class ProfessorIndex:
@@ -341,6 +401,58 @@ def _suppress_common_word(last: str, text: str) -> bool:
     return False
 
 
+# Reporter abbreviations / citation markers signaling a legal case, not a person.
+_CITATION_RE = re.compile(
+    r"\b(?:v\.?\s|vs\.?\s)|"                       # "Fang v. ICE"
+    r"\b(?:F\.\s?\d?d|F\.\s?Supp|U\.S\.|S\.\s?Ct|"  # reporters: F.3d, U.S., S.Ct
+    r"Cir\.|F\.\s?App'x)\b")
+# Book/author context: ISBN, edition, copyright, "Author:" — the surname is a
+# textbook author on a for-sale / reading-list line, not a teacher.
+_AUTHOR_RE = re.compile(
+    r"\b(?:isbn|isbn-1[03]|author|edition|publisher|mcgraw|wiley|pearson|"
+    r"cengage|routledge)\b|©|\(c\)\s?\d{4}", re.IGNORECASE)
+# A building/venue: the surname is immediately followed by a place noun.
+_BUILDING_AFTER_RE = re.compile(
+    r"\b(?:arena|hall|library|institute|building|stadium|gym|gymnasium|"
+    r"quad|fieldhouse|center|centre)\b", re.IGNORECASE)
+
+
+def _suppress_nonperson(last: str, text: str) -> bool:
+    """True if `last` lands on a clear non-person context: a textbook author
+    line (ISBN/edition/©), a campus building (``Matthews Arena``), or a legal
+    citation (``Fang v. ICE``). Applies to ANY surname (not just common words),
+    but never fires when an explicit professor signal (prof/Dr/"his class"/
+    teaches) is present, so real mentions are preserved. A bare nearby course
+    code does NOT spare it — reading-list headers carry course codes too.
+    """
+    if not last:
+        return False
+    # An explicit person signal (prof/Dr/"his class"/teaches) always wins — these
+    # are unambiguous. A bare nearby COURSE CODE does NOT, because a reading-list
+    # header ("CHEM 1161: Gilbert, Kirss … 4th edition") carries a course code yet
+    # is still an author line; the author/citation/building markers below are more
+    # specific and override it.
+    if _PROF_SIGNAL_RE.search(text or ""):
+        return False
+    # Fold curly quotes and drop apostrophes so a possessive/typo'd building name
+    # ("Matthew's Arena") collapses onto the surname token ("matthews arena").
+    low = _ascii_fold_keep_case(text or "").lower().replace("'", "")
+    low = " ".join(low.split())
+    if last not in low:
+        return False
+    # Building: the surname is directly followed by a venue noun ("matthews arena").
+    if re.search(r"\b" + re.escape(last) + r"\s+(?:" + _BUILDING_AFTER_RE.pattern
+                 + r")", low):
+        return True
+    # Legal citation anywhere in a short-ish span around the surname.
+    if _CITATION_RE.search(text or ""):
+        return True
+    # Textbook author: ISBN/edition/©/Author marker present in the text.
+    if _AUTHOR_RE.search(text or ""):
+        return True
+    return False
+
+
 def _ascii_fold_keep_case(text: str) -> str:
     """NFKD ASCII-fold and straighten curly quotes WITHOUT lowercasing.
 
@@ -375,6 +487,29 @@ def _contains_word(norm_text: str, phrase: str) -> bool:
     return bool(phrase) and bool(
         re.search(r"\b" + re.escape(phrase) + r"\b", norm_text)
     )
+
+
+def _first_name_near(norm_text: str, first: str, last: str, window: int = 2) -> bool:
+    """True if `first` appears within `window` tokens BEFORE `last` in norm_text.
+
+    Real mentions write the name together ("john rachlin", or "thomas john
+    plahovinsak" with a middle name), so the first name sits just before the
+    surname. A first name scattered elsewhere ("George Floyd … Freddie Gray")
+    is a coincidence and must not corroborate. The surname must follow the first
+    name (names are written first-then-last), and the gap allows up to
+    `window - 1` middle tokens. Both args must already be normalized.
+    """
+    if not first or not last:
+        return False
+    toks = norm_text.split()
+    last_pos = [i for i, t in enumerate(toks) if t.strip(",") == last]
+    first_pos = [i for i, t in enumerate(toks) if t.strip(",") == first]
+    if not last_pos or not first_pos:
+        return False
+    for lp in last_pos:
+        if any(0 < lp - fp <= window for fp in first_pos):
+            return True
+    return False
 
 
 def _strip_possessive(token: str) -> str:
@@ -461,6 +596,10 @@ def match_item(
             ):
                 continue
             if re.search(r"\b" + re.escape(nk) + r"\b", norm_text):
+                # A contiguous full name on an author line / legal citation is
+                # still not a teacher ("David Massey, 4th edition"; "Fang v. ICE").
+                if _suppress_nonperson(last, text):
+                    continue
                 cands.append(Candidate(nk, 1.00, "exact_full", nk,
                                        lc_origin=lc_only_last))
 
@@ -473,11 +612,23 @@ def match_item(
         # relaxed case: admit it ONLY with corroboration. Bare lowercase
         # surnames are dropped below.
         lc_only = match_lowercase and last not in cap_last
+        # A UNIQUE distinctive surname (one catalog prof, not a common word, of
+        # real length) can corroborate on a first name found ANYWHERE — there is
+        # no other professor to mis-attribute to, so "Felleisen … matthias" is
+        # safe. A COLLISION or common-word surname must use PROXIMITY, since a
+        # stray first name there picks the wrong prof ("George Floyd … Freddie
+        # Gray" -> george gray) or a non-person ("don't … Burger King").
+        surname_is_unique = (len(profs) == 1 and last not in _COMMON_WORD_SURNAMES
+                             and len(last) >= 4)
         for prof in profs:
-            # Corroboration. A single-character first name ("D Hope") is too weak
-            # to count — it would match almost any text.
-            has_first = (len(prof.first_name) >= 2
-                         and _contains_word(norm_text, prof.first_name))
+            # A single-character first name ("D Hope") is too weak to count — it
+            # would match almost any text.
+            if len(prof.first_name) < 2:
+                has_first = False
+            elif surname_is_unique:
+                has_first = _contains_word(norm_text, prof.first_name)
+            else:
+                has_first = _first_name_near(norm_text, prof.first_name, last)
             has_dept = _contains_word(norm_text, prof.dept_norm)
             has_course = prof.name_key in course_keys_present
 
@@ -510,6 +661,12 @@ def match_item(
                 if last in _COMMON_WORD_SURNAMES or len(last) <= 2:
                     continue
             if not has_first and _suppress_common_word(last, text):
+                continue
+            # Author/building/citation contexts are non-persons even when the
+            # first name is adjacent ("Author: David B. Massey"), so this guard
+            # runs regardless of has_first; its own prof-signal check spares
+            # genuine mentions.
+            if _suppress_nonperson(last, text):
                 continue
             cands.append(Candidate(prof.name_key, conf, "lastname", last,
                                    lc_origin=lc_only))
@@ -1166,6 +1323,57 @@ def selftest() -> int:
     check("last name single", len(idx.by_last_name.get("kuznetsov", [])) == 1)
     check("last name collision", len(idx.by_last_name.get("kim", [])) == 2)
 
+    # --- Suffix-duplicate merge: same person catalogued with and without a
+    # generational suffix collapses to ONE canonical professor (more ratings
+    # wins), so a single mention can't emit both variants. ---
+    dup_pair = [
+        Professor("richard-melloni", "Richard Melloni", "richard melloni",
+                  "Psychology", "COS", 30, 30, 9),
+        Professor("richard-melloni-jr", "Richard Melloni Jr", "richard melloni jr",
+                  "Psychology", "COS", 4, 4, 1),
+    ]
+    merged = merge_suffix_duplicates(dup_pair)
+    check("suffix-dup: pair collapses to one professor", len(merged) == 1)
+    check("suffix-dup: canonical is the higher-rated entry",
+          merged[0].slug == "richard-melloni")
+    # A distinct person who merely shares a surname is NOT merged.
+    no_merge = merge_suffix_duplicates([
+        Professor("a-jones", "Aaron Jones", "aaron jones", "CS", "Khoury", 5, 5, 1),
+        Professor("b-jones-jr", "Brian Jones Jr", "brian jones jr", "CS", "Khoury", 5, 5, 1),
+    ])
+    check("suffix-dup: different first names not merged", len(no_merge) == 2)
+
+    # --- Bug 1: a generational suffix is NOT the surname ---
+    suf_fix = [
+        Professor("martin-schwarz", "Martin Schwarz Jr.", "martin schwarz jr.",
+                  "Mathematics", "COS", 10, 10, 3),
+        Professor("olin-shivers", "Olin Shivers III", "olin shivers iii",
+                  "Computer Science", "Khoury", 20, 20, 5),
+    ]
+    suf_idx = ProfessorIndex(suf_fix)
+    check("suffix: last_name is real surname not 'jr.'",
+          suf_fix[0].last_name == "schwarz")
+    check("suffix: last_name is real surname not 'iii'",
+          suf_fix[1].last_name == "shivers")
+    check("suffix: prof indexed under real surname",
+          len(suf_idx.by_last_name.get("schwarz", [])) == 1)
+    check("suffix: prof NOT indexed under the suffix token",
+          suf_idx.by_last_name.get("jr.") is None
+          and suf_idx.by_last_name.get("iii") is None)
+    # A bare "Jr" ending a capitalized run must not seed a suffix-named prof even
+    # when the first name appears elsewhere ("Martin … MLK Jr"). The suffix is not
+    # a surname, so it must never be the candidate anchor.
+    suf_np = ProfessorIndex([
+        Professor("martin-schwarz", "Martin Schwarz Jr", "martin schwarz jr",
+                  "Mathematics", "COS", 10, 10, 3)])
+    cands = match_item("Martin is away. Happy MLK Jr to all", suf_np, {})
+    check("suffix: bare 'Jr' + stray first name does not match suffix prof",
+          not any(c.name_key == "martin schwarz jr" for c in cands))
+    # But the real surname still resolves with corroboration.
+    cands = match_item("I had Martin Schwarz for calc and he was fair", suf_idx, {})
+    check("suffix: real surname still resolves",
+          any(c.name_key == "martin schwarz jr." and c.confidence >= 0.97 for c in cands))
+
     course_map = {"CS3500": {"anatoliy kuznetsov"}}
 
     cands = match_item("Professor Anatoliy Kuznetsov is great", idx, course_map)
@@ -1193,6 +1401,72 @@ def selftest() -> int:
     cands = match_item("John Law was a great teacher", stop_idx, {})
     check("common-word surname with firstname kept",
           any(c.method == "lastname" and c.name_key == "john law" for c in cands))
+
+    # --- Bug 4: first-name corroboration requires PROXIMITY. A first name far
+    # from the surname is a coincidence ("George Floyd … Freddie Gray"); the real
+    # mention has them together, allowing a middle name in between. ---
+    near = _first_name_near
+    check("proximity: adjacent first+last corroborates",
+          near("i had john rachlin for ds", "john", "rachlin"))
+    check("proximity: middle name still corroborates",
+          near("thomas john plahovinsak teaches micro", "thomas", "plahovinsak"))
+    check("proximity: scattered first+last does NOT corroborate",
+          not near("george floyd ignited it freddie gray and others", "george", "gray"))
+    check("proximity: far-apart same sentence does NOT corroborate",
+          not near("michael was great and i also saw professor gray downtown last week too", "michael", "gray"))
+    check("proximity: surname-before-first does not corroborate",
+          not near("gray is tough and george is easy", "george", "gray"))
+
+    # --- Bug 4 refinement: a UNIQUE distinctive surname (one catalog prof) may
+    # still resolve on a scattered first name — there's no other prof to mis-pick,
+    # so "Felleisen … matthias" elsewhere is safe. A COLLISION surname may not. ---
+    uniq_idx = ProfessorIndex([
+        Professor("matthias-felleisen", "Matthias Felleisen", "matthias felleisen",
+                  "Computer Science", "Khoury", 100, 100, 40)])
+    cands = match_item(
+        "Matthias makes the curriculum. I recommend reading Felleisen's blog later",
+        uniq_idx, {})
+    check("unique surname: scattered first name still resolves",
+          any(c.name_key == "matthias felleisen" and c.confidence >= 0.97
+              for c in cands))
+    # A bare unique surname (no first name anywhere) stays sub-threshold as before.
+    cands = match_item("I recommend reading Felleisen's blog post on developers",
+                       uniq_idx, {})
+    check("unique surname: bare (no first name) stays sub-threshold",
+          all(c.confidence < 0.80 for c in cands if c.method == "lastname"))
+    # A COLLISION surname must NOT resolve on a scattered first name (george gray).
+    coll_idx = ProfessorIndex([
+        Professor("george-gray", "George Gray", "george gray", "Physics", "COS", 5, 5, 1),
+        Professor("michael-gray", "Michael Gray", "michael gray", "Math", "COS", 5, 5, 1)])
+    cands = match_item("George Floyd ignited it, Freddie Gray and others", coll_idx, {})
+    check("collision surname: scattered first name does NOT resolve",
+          not any(c.confidence >= 0.97 for c in cands))
+
+    # --- Bug 2 (now via proximity): a common-word surname must not resolve on a
+    # SCATTERED common first name. "Don King" needs the names together. ---
+    king_fix = [Professor("don-king", "Don King", "don king",
+                          "Mathematics", "COS", 8, 8, 2)]
+    king_idx = ProfessorIndex(king_fix)
+    # "don" appears only inside "don't"; "King" is Burger King -> must not resolve.
+    cands = match_item("Berger King disappeared, don't tell me NEU lost it too",
+                       king_idx, {})
+    check("commonword: scattered 'don' + Burger King does not resolve",
+          not any(c.confidence >= 0.80 for c in cands))
+    # "Chris King" with a stray "don" elsewhere -> must not resolve to Don King.
+    cands = match_item("Don't know that prof. Chris King is tops though", king_idx, {})
+    check("commonword: stray 'don' does not corroborate a different King",
+          not any(c.name_key == "don king" and c.confidence >= 0.80 for c in cands))
+    # The contiguous full name still resolves (high precision).
+    cands = match_item("I took linear algebra with Don King last fall", king_idx, {})
+    check("commonword: contiguous full name still resolves",
+          any(c.name_key == "don king" and c.confidence >= 0.97 for c in cands))
+    # Course corroboration still lifts a common-word surname (legit "Park CS3650").
+    park_idx = ProfessorIndex([Professor("john-park", "John Park", "john park",
+                                         "Computer Science", "Khoury", 30, 30, 9)])
+    cands = match_item("CS3650 Computer Systems with Park is a lot of work",
+                       park_idx, {"CS3650": {"john park"}})
+    check("commonword: course corroboration still resolves",
+          any(c.name_key == "john park" and c.confidence >= 0.98 for c in cands))
 
     # Very short surname needs corroboration too.
     short_fix = [Professor("li-ta", "Li Ta", "li ta", "Music", "Arts", 4, 4, 1)]
@@ -1296,6 +1570,47 @@ def selftest() -> int:
     check("keep: courteous is not court (word boundary)", not sup("black", "Benjamin Black is courteous and kind"))
     check("keep: his class is a prof signal", not sup("king", "his class with king was great"))
     check("keep: exam is a prof signal", not sup("price", "the price exam was brutal"))
+
+    # --- Bug 3: author / building / citation contexts are not professors ---
+    # A surname landing on a textbook author line, a campus building, or a legal
+    # citation must not resolve, even with a stray first name.
+    sup2 = _suppress_nonperson
+    check("nonperson: textbook author + ISBN",
+          sup2("massey", "Author: David B. Massey ISBN-10: 0-9842071-3-9 ©2012"))
+    check("nonperson: textbook author + edition",
+          sup2("gilbert", "CHEM 1161: Gilbert, Kirss, Bretz. Chemistry, 4th edition"))
+    check("nonperson: Matthews Arena building",
+          sup2("matthews", "Sitting in the DogHouse at Matthews Arena for a hockey game"))
+    check("nonperson: legal citation X v. Y",
+          sup2("fang", "restrictions established in Fang v. ICE, 935 F.3d 172 (3rd Cir. 2019)"))
+    check("nonperson: Matthew's Arena (possessive) building",
+          sup2("matthews", "R.I.P. Matthew's Arena! Been nice knowing you"))
+    check("nonperson: keeps a real prof mention",
+          not sup2("durant", "Prof. Durant's review for CS 5200 was helpful"))
+    check("nonperson: keeps plain surname review",
+          not sup2("massey", "I had Massey last semester and he was a great lecturer"))
+
+    auth_fix = [Professor("david-massey", "David Massey", "david massey",
+                          "Mathematics", "COS", 6, 6, 2)]
+    auth_idx = ProfessorIndex(auth_fix)
+    cands = match_item("Author: David B. Massey ISBN-10: 0-9842071-3-9 ©2012",
+                       auth_idx, {})
+    check("nonperson: textbook-author full name does not resolve",
+          not any(c.confidence >= 0.80 for c in cands))
+    # A CONTIGUOUS full name on an author line is suppressed in Layer 1 too.
+    massey2_fix = [Professor("david-massey", "David Massey", "david massey",
+                             "Mathematics", "COS", 6, 6, 2)]
+    massey2_idx = ProfessorIndex(massey2_fix)
+    cands = match_item("Selling: David Massey, Calculus 4th edition, ISBN 978-0",
+                       massey2_idx, {})
+    check("nonperson: contiguous author full name does not resolve",
+          not any(c.confidence >= 0.80 for c in cands))
+    arena_fix = [Professor("nicolle-matthews", "Nicolle Matthews", "r. nicolle matthews",
+                           "Music", "Arts", 4, 4, 1)]
+    arena_idx = ProfessorIndex(arena_fix)
+    cands = match_item("R.I.P. Matthews Arena! Best hockey memories", arena_idx, {})
+    check("nonperson: building name does not resolve",
+          not any(c.method == "lastname" and c.confidence >= 0.80 for c in cands))
 
     check("strip t3", strip_fullname_prefix("t3_9z0c3") == "9z0c3")
     check("strip t1", strip_fullname_prefix("t1_abc") == "abc")
