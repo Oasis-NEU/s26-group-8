@@ -556,6 +556,7 @@ def run(args: argparse.Namespace) -> None:
     # We only KEEP text for items that produced no confident match (candidates
     # for pass 2), to bound memory. Resolved subjects are tracked per thread.
     thread_subjects: Dict[str, Set[str]] = defaultdict(set)
+    thread_surnames: Dict[str, Dict[str, Set[str]]] = defaultdict(lambda: defaultdict(set))
     pending: List[Tuple[str, str, str, str]] = []  # for pass-2 reconsideration
 
     # try/finally (mirroring reddit_scrape.py) so a crash mid-run still flushes
@@ -586,11 +587,21 @@ def run(args: argparse.Namespace) -> None:
         })
 
     def handle(source_type: str, source_id: str, thread_id: str, text: str) -> None:
-        mr = aggregate(match_item(text, index, course_map),
-                       resolve_threshold, margin, floor)
+        cands = match_item(text, index, course_map)
+        # Record full names seen in this thread (for pass-2 surname anchoring).
+        for c in cands:
+            if c.method == "exact_full":
+                thread_surnames[thread_id][c.name_key.split()[-1]].add(c.name_key)
+        mr = aggregate(cands, resolve_threshold, margin, floor)
         if mr is None:
-            if not args.no_conv_context and has_context_trigger(text):
+            if not args.no_conv_context:
+                # Queue for pass 2 if it has a context trigger OR any bare
+                # surname (the thread-anchor layer may resolve it).
                 pending.append((source_type, source_id, thread_id, text))
+            return
+        # Defer ambiguous results to pass 2 so thread_anchor can resolve them.
+        if mr.status == "ambiguous" and not args.no_conv_context:
+            pending.append((source_type, source_id, thread_id, text))
             return
         emit(source_type, source_id, thread_id, mr)
         if mr.status == "resolved":
@@ -611,19 +622,37 @@ def run(args: argparse.Namespace) -> None:
             n += 1
         print(f"  pass 1 done: {n} items, {len(pending)} pending context items")
 
-        # ---- Pass 2: conversation context ----
+        # ---- Pass 2: thread surname anchoring, then conversation context ----
         if not args.no_conv_context:
-            print("→ pass 2: conversation context…")
-            resolved2 = 0
+            print("→ pass 2: thread anchoring + conversation context…")
+            anchored2 = 0
+            ctx2 = 0
             for source_type, source_id, thread_id, text in pending:
-                subj = thread_subjects.get(thread_id)
-                if not subj:
-                    continue
-                mr = resolve_conv_context(text, subj, index, floor)
+                # Thread surname anchor first (a name anchor beats a pronoun).
+                mr = resolve_thread_anchor(text, thread_surnames.get(thread_id, {}), floor)
                 if mr is not None:
                     emit(source_type, source_id, thread_id, mr)
-                    resolved2 += 1
-            print(f"  pass 2 done: {resolved2} context mentions emitted")
+                    if mr.status == "resolved":
+                        thread_subjects[thread_id].add(mr.name_key)
+                    anchored2 += 1
+                    continue
+                # Then conversation context (pronoun / "Prof X" against subjects).
+                subj = thread_subjects.get(thread_id)
+                if subj and has_context_trigger(text):
+                    mr = resolve_conv_context(text, subj, index, floor)
+                    if mr is not None:
+                        emit(source_type, source_id, thread_id, mr)
+                        ctx2 += 1
+                        continue
+                # Neither anchor nor context resolved — fall back to the pass-1
+                # aggregate result (may be ambiguous or None).
+                mr = aggregate(match_item(text, index, course_map),
+                               resolve_threshold, margin, floor)
+                if mr is not None:
+                    emit(source_type, source_id, thread_id, mr)
+                    if mr.status == "resolved":
+                        thread_subjects[thread_id].add(mr.name_key)
+            print(f"  pass 2 done: {anchored2} thread-anchor + {ctx2} context mentions")
     finally:
         writer_fh.close()
     print(f"\n  ✓ wrote mentions → {MENTIONS_CSV}")
@@ -762,6 +791,52 @@ def golden_selftest(check) -> None:
     r = resolve("you should check the law before signing the lease")
     check("golden: common-word bare not resolved",
           r is None or r.status != "resolved")
+
+
+_SURNAME_WORD_RE = re.compile(r"[a-z][a-z'-]*")
+
+
+def resolve_thread_anchor(
+    text: str, thread_surnames: Dict[str, Set[str]], floor: float,
+) -> Optional[MatchResult]:
+    """Resolve a bare surname in `text` against full names seen in the thread.
+
+    `thread_surnames` maps a surname -> set of full name_keys (from exact_full
+    matches) that appeared anywhere in the thread. A bare surname in the comment
+    (whole word, case-insensitive, length > 2, not a common-word surname, and
+    not already part of a full name written in this comment) that matches:
+      - exactly one thread full name -> resolved at 0.90 (method thread_anchor)
+      - two or more -> ambiguous among them
+    Returns None if nothing matches or below floor.
+    """
+    if not thread_surnames:
+        return None
+    norm = normalize_name(text)
+    words = set(_SURNAME_WORD_RE.findall(norm))
+    best: Optional[MatchResult] = None
+    for surname, nks in thread_surnames.items():
+        if len(surname) <= 2 or surname in _COMMON_WORD_SURNAMES:
+            continue
+        if surname not in words:
+            continue
+        # Skip if the comment already spells out the full name (that path is
+        # exact_full in pass 1, not a bare-surname anchor).
+        if any(nk in norm for nk in nks):
+            continue
+        ordered = sorted(nks)
+        if len(ordered) == 1:
+            conf = 0.90
+            if conf < floor:
+                return None
+            return MatchResult(name_key=ordered[0], confidence=conf,
+                               method="thread_anchor", matched_token=surname,
+                               status="resolved")
+        # multiple full names share this surname in-thread -> ambiguous
+        if 0.90 >= floor and best is None:
+            best = MatchResult(name_key="", confidence=0.90,
+                               method="thread_anchor", matched_token=surname,
+                               status="ambiguous", candidate_keys=ordered)
+    return best
 
 
 def selftest() -> int:
@@ -911,6 +986,30 @@ def selftest() -> int:
     check("band top", confidence_band(1.0) == "0.95-1.00")
 
     golden_selftest(check)
+
+    # Thread surname anchor: bare "kuznetsov" with the full name in the thread map.
+    tsm = {"kuznetsov": {"anatoliy kuznetsov"}}
+    r = resolve_thread_anchor("kuznetsov is chill, take his class", tsm, 0.55)
+    check("anchor resolves bare surname", r is not None and r.status == "resolved"
+          and r.name_key == "anatoliy kuznetsov" and r.method == "thread_anchor"
+          and r.confidence == 0.90)
+    # lowercase too
+    r = resolve_thread_anchor("im taking KUZNETSOV rn", tsm, 0.55)
+    check("anchor case-insensitive", r is not None and r.status == "resolved")
+    # two same-surname full names in thread -> ambiguous
+    tsm2 = {"kim": {"jane kim", "david kim"}}
+    r = resolve_thread_anchor("kim was tough", tsm2, 0.55)
+    check("anchor two fullnames ambiguous", r is not None and r.status == "ambiguous"
+          and set(r.candidate_keys) == {"jane kim", "david kim"})
+    # surname not in thread -> None
+    r = resolve_thread_anchor("smith was great", tsm, 0.55)
+    check("anchor no surname match -> None", r is None)
+    # stoplisted surname even if in thread map -> not anchored
+    r = resolve_thread_anchor("the law was clear", {"law": {"john law"}}, 0.55)
+    check("anchor skips stoplisted surname", r is None)
+    # comment that already has the full name -> not anchored (exact_full handles it)
+    r = resolve_thread_anchor("anatoliy kuznetsov is chill", tsm, 0.55)
+    check("anchor skips when full name present", r is None)
 
     print(f"\n  {'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return failures
