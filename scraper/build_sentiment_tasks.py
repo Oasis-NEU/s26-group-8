@@ -1,5 +1,5 @@
 """
-Sentiment work-file builder for resolved Reddit professor mentions.
+Sentiment work-file builder for resolved Reddit professor mentions. 
 
 There are two independent scoring tiers, selected with --tier (default
 ``highconf``). Each tier has its own task/score files so a completed tier
