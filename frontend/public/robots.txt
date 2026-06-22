@@ -2,20 +2,46 @@ User-agent: *
 Disallow: /api/
 Disallow: /auth/
 
+# ──────────────────────────────────────────────
+#  AI search & retrieval crawlers — ALLOWED so the
+#  site can be cited by ChatGPT, Claude, Perplexity,
+#  Gemini and Google AI Overviews.
+# ──────────────────────────────────────────────
+User-agent: OAI-SearchBot
+Allow: /
+
 User-agent: GPTBot
-Disallow: /
+Allow: /
 
-User-agent: CCBot
-Disallow: /
+User-agent: ChatGPT-User
+Allow: /
 
-User-agent: Google-Extended
-Disallow: /
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Perplexity-User
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Claude-SearchBot
+Allow: /
+
+User-agent: Claude-User
+Allow: /
 
 User-agent: anthropic-ai
-Disallow: /
+Allow: /
 
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+# Aggressive scraper with little citation value — kept blocked.
 User-agent: Bytespider
 Disallow: /
 
-User-agent: ClaudeBot
-Disallow: /
+Sitemap: https://ratemyhusky.com/sitemap.xml

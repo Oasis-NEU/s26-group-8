@@ -7,6 +7,7 @@ import Dropdown from '../components/Dropdown';
 import StarRating from '../components/StarRating';
 import RatingBar from '../components/RatingBar';
 import Breadcrumbs from '../components/Breadcrumbs';
+import Seo from '../components/Seo';
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
   ResponsiveContainer, Legend, Tooltip as RechartsTooltip,
@@ -734,8 +735,40 @@ const [showCourseTip, setShowCourseTip] = useState(() => localStorage.getItem('p
 
   if (error || !profile || !stats) return <NotFound />;
 
+  const seoDescription =
+    `${profile.name} teaches ${profile.department} at Northeastern University. ` +
+    `Average rating ${profile.avgRating.toFixed(1)}/5 across ${profile.totalRatings} ratings` +
+    (profile.wouldTakeAgainPct != null ? `, ${profile.wouldTakeAgainPct}% would take again` : '') +
+    `. TRACE evaluations and RateMyProfessor reviews in one place.`;
+
   return (
     <div className="prof-page">
+      <Seo
+        title={`${profile.name} — ${profile.department} at Northeastern | RateMyHusky`}
+        description={seoDescription}
+        canonical={`https://ratemyhusky.com/professors/${slug}`}
+        image={profile.imageUrl}
+        ogType="profile"
+        jsonLd={{
+          '@context': 'https://schema.org',
+          '@type': 'Person',
+          name: profile.name,
+          jobTitle: 'Professor',
+          worksFor: { '@type': 'CollegeOrUniversity', name: 'Northeastern University' },
+          ...(profile.imageUrl ? { image: profile.imageUrl } : {}),
+          ...(profile.totalRatings > 0
+            ? {
+                aggregateRating: {
+                  '@type': 'AggregateRating',
+                  ratingValue: profile.avgRating.toFixed(2),
+                  ratingCount: profile.totalRatings,
+                  bestRating: '5',
+                  worstRating: '1',
+                },
+              }
+            : {}),
+        }}
+      />
       <header className="prof-hero">
         <div className="prof-hero-bg" style={{ backgroundImage: `url(${neuIcon})` }} />
         <div className="prof-hero-glow" />

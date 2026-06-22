@@ -5,6 +5,7 @@ import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import SearchBar from '../components/SearchBar';
 import Footer from '../components/Footer';
+import Seo from '../components/Seo';
 import { fetchGoatProfessors, fetchProfessorsCatalog } from '../api/api';
 import type { CatalogProfessor, Professor } from '../api/api';
 import neuIcon from '../assets/neu-circle-icon.png';
@@ -409,6 +410,18 @@ const Homepage = () => {
 
   return (
     <div className="homepage">
+      <Seo
+        title="RateMyHusky — Northeastern Professor & Course Ratings"
+        description="Find the right Northeastern professor every semester. RateMyHusky combines TRACE evaluations and RateMyProfessor ratings for thousands of professors and courses in one place."
+        canonical="https://ratemyhusky.com/"
+        jsonLd={{
+          '@context': 'https://schema.org',
+          '@type': 'WebSite',
+          name: 'RateMyHusky',
+          url: 'https://ratemyhusky.com/',
+          description: 'Northeastern University professor and course ratings combining TRACE evaluations and RateMyProfessor reviews.',
+        }}
+      />
       {/* ======== Hero ======== */}
       <main className="homepage-hero">
         <div

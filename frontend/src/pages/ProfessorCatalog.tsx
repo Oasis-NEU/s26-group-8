@@ -10,6 +10,7 @@ import {
 import Footer from '../components/Footer';
 import Dropdown from '../components/Dropdown';
 import StarRating from '../components/StarRating';
+import Seo from '../components/Seo';
 import { getInitials, splitProfName, stripPrefix } from '../utils/nameUtils';
 
 import './ProfessorCatalog.css';
@@ -412,6 +413,11 @@ export default function ProfessorCatalog() {
 
   return (
     <div className="catalog-page">
+      <Seo
+        title="Browse Northeastern Professors | RateMyHusky"
+        description="Browse and filter thousands of Northeastern University professors by department, college, and rating. Compare TRACE evaluations and RateMyProfessor reviews."
+        canonical="https://ratemyhusky.com/professors"
+      />
 
       {sidebarOpen && (
         <div className="catalog-overlay" onClick={() => setSidebarOpen(false)} />

@@ -19,17 +19,13 @@
     <meta name="theme-color" content="#ffffff" />
     <meta name="robots" content="index, follow" />
 
-    <!-- Open Graph / Link Preview -->
-    <meta property="og:type" content="website" />
-    <meta property="og:title" content="RateMyHusky" />
-    <meta property="og:description" content="Find the right professor, every semester. TRACE evaluations and RateMyProfessor ratings, all in one place." />
+    <!-- Constant fallbacks only. Per-page title/description/og:type/url and
+         JSON-LD are set at runtime by <Seo>. We intentionally do NOT put a
+         description or og:title/description/url/type here, so React 19 owns
+         them per route without producing duplicate tags. -->
+    <meta property="og:site_name" content="RateMyHusky" />
     <meta property="og:image" content="https://ratemyhusky.com/logo.jpg" />
-    <meta property="og:url" content="https://ratemyhusky.com" />
-
-    <!-- Twitter Card -->
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="RateMyHusky" />
-    <meta name="twitter:description" content="Find the right professor, every semester. TRACE evaluations and RateMyProfessor ratings, all in one place." />
     <meta name="twitter:image" content="https://ratemyhusky.com/logo.jpg" />
 
     <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>

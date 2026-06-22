@@ -9,6 +9,7 @@ import { getInitials, stripPrefix } from '../utils/nameUtils';
 import { termSortKey } from '../utils/termUtils';
 import SectionHistoryChart from '../components/SectionHistoryChart';
 import Breadcrumbs from '../components/Breadcrumbs';
+import Seo from '../components/Seo';
 import { useAuth } from '../context/AuthContext';
 import SignInModal from '../components/SignInModal';
 import './Course.css';
@@ -155,8 +156,26 @@ const Course = () => {
 	const canCollapseInstructors = visibleInstructorCount > INITIAL_INSTRUCTORS_VISIBLE;
 	const hasExpandableInstructors = course.instructors.length > INITIAL_INSTRUCTORS_VISIBLE;
 
+	const courseSeoDescription =
+		`${summary.code} — ${summary.name} (${summary.department}) at Northeastern University. ` +
+		(summary.avgRating != null ? `Average rating ${summary.avgRating.toFixed(1)}/5. ` : '') +
+		(summary.latestTermTitle ? `Last taught ${summary.latestTermTitle}. ` : '') +
+		`Compare instructors with TRACE evaluations and RateMyProfessor reviews.`;
+
 	return (
 		<div className="course-page">
+			<Seo
+				title={`${summary.code} — ${summary.name} at Northeastern | RateMyHusky`}
+				description={courseSeoDescription}
+				canonical={`https://ratemyhusky.com/courses/${code}`}
+				jsonLd={{
+					'@context': 'https://schema.org',
+					'@type': 'Course',
+					name: `${summary.code} — ${summary.name}`,
+					courseCode: summary.code,
+					provider: { '@type': 'CollegeOrUniversity', name: 'Northeastern University' },
+				}}
+			/>
 			<div className="course-shell">
 				<Breadcrumbs items={[
 					{ label: 'Courses', to: '/courses' },

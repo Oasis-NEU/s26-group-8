@@ -10,6 +10,7 @@ import {
 import Dropdown from '../components/Dropdown';
 import Footer from '../components/Footer';
 import StarRating from '../components/StarRating';
+import Seo from '../components/Seo';
 import './ProfessorCatalog.css';
 import './Courses.css';
 
@@ -311,6 +312,11 @@ export default function Courses() {
 
 	return (
 		<div className="catalog-page">
+			<Seo
+				title="Browse Northeastern Courses | RateMyHusky"
+				description="Browse and filter Northeastern University courses by department and rating. See TRACE evaluation data and compare instructors for every course."
+				canonical="https://ratemyhusky.com/courses"
+			/>
 			{sidebarOpen && <div className="catalog-overlay" onClick={() => setSidebarOpen(false)} />}
 
 			<div className="catalog-header">
