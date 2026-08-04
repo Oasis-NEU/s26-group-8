@@ -15,14 +15,42 @@ path (full scores + radar) stays in server.py.
 
 import re
 
+from prof_aliases import canonical_slug
 
-def _resolve_professor(slug, query_one):
-    """One catalog lookup, slug then name_key fallback. Returns the row or None."""
+
+def resolve_professor(slug, query_one):
+    """Catalog row for a slug: direct, then name_key, then retired-slug fallback.
+
+    The single place slugs are resolved, so every professor route accepts the
+    same set of URLs. SELECT * (not a column list) so this still works against a
+    catalog built before trace_name_key existed.
+
+    The third step matters because a professor's slug is derived from their
+    aliased name_key, so adding an ALIAS_MAP entry retires the old slug (see
+    SLUG_ALIASES). It is checked last so a live slug always wins over a retired
+    one, and the name_key attempt in between is the pre-existing behaviour for
+    slugs that differ only by punctuation.
+    """
     prof = query_one("SELECT * FROM professors_catalog WHERE slug = %s", (slug,))
     if not prof:
         name_key = slug.strip().lower().replace("-", " ")
         prof = query_one("SELECT * FROM professors_catalog WHERE name_key = %s", (name_key,))
+    if not prof:
+        current = canonical_slug(slug)
+        if current:
+            prof = query_one("SELECT * FROM professors_catalog WHERE slug = %s", (current,))
     return prof
+
+
+def trace_key(prof):
+    """TRACE-side name_key for a catalog row.
+
+    Fuzzy-matched professors carry their TRACE scores under a different name
+    than RMP uses; precompute records which one in trace_name_key. NULL (exact
+    match, or a catalog built before the column existed) falls back to the
+    professor's own key. RMP-side lookups must keep using prof["name_key"].
+    """
+    return prof.get("trace_name_key") or prof["name_key"]
 
 
 def _course_code(display_name):
@@ -42,7 +70,7 @@ def _scan_trace_scores(name_key, query):
     """
     rows = query("""
         SELECT tc.display_name, ts.course_id, ts.term_id, ts.question, ts.mean,
-               ts.completed, ts.count_1, ts.count_2, ts.count_3, ts.count_4, ts.count_5
+               ts.count_1, ts.count_2, ts.count_3, ts.count_4, ts.count_5
         FROM trace_scores ts
         JOIN trace_courses tc
           ON ts.course_id = tc.course_id
@@ -95,17 +123,22 @@ def _scan_trace_scores(name_key, query):
 
         # Law sections carry two overall questions; ratings use 'Overall Course' only.
         # Exact match: the Bluera label also contains the word "effectiveness".
+        #
+        # Per-star counts only. This used to carry the section's `completed` as
+        # well, and the profile page summed that for its "Total Ratings" stat —
+        # a different quantity from the bars underneath it (students who
+        # submitted the survey vs students who answered this question) and a
+        # third one from the board's number. See precompute.trace_review_counts.
         if "overall" in q and q != "overall effectiveness":
             code = _course_code(s["display_name"])
             if code not in rating_dist_by_course:
                 rating_dist_by_course[code] = {"count1": 0, "count2": 0, "count3": 0,
-                                               "count4": 0, "count5": 0, "completed": 0}
+                                               "count4": 0, "count5": 0}
             rating_dist_by_course[code]["count1"] += c1
             rating_dist_by_course[code]["count2"] += c2
             rating_dist_by_course[code]["count3"] += c3
             rating_dist_by_course[code]["count4"] += c4
             rating_dist_by_course[code]["count5"] += c5
-            rating_dist_by_course[code]["completed"] += int(s["completed"] or 0)
 
     return challeng_by_ct, hours_by_ct, rating_dist_by_course, challeng_sum, challeng_weight
 
@@ -113,7 +146,7 @@ def _scan_trace_scores(name_key, query):
 def build_profile_unauthed(prof, trace_course_rows, query):
     """Build the unauthenticated profile dict from an already-fetched catalog
     row and trace_courses rows (no further catalog/course lookups)."""
-    name_key = prof["name_key"]
+    name_key = trace_key(prof)
     profile = {
         "name": prof["name"],
         "department": prof["department"],
@@ -270,12 +303,11 @@ def build_full(slug, query, query_one, sanitize,
         def fetch_reddit_mentions(_slug, _q):
             return []
 
-    prof = _resolve_professor(slug, query_one)
+    prof = resolve_professor(slug, query_one)
     if not prof:
         return None
 
-    name_key = prof["name_key"]
-    trace_course_rows = build_trace_course_rows(name_key, query)
+    trace_course_rows = build_trace_course_rows(trace_key(prof), query)
 
     profile = build_profile_unauthed(prof, trace_course_rows, query)
     reviews = build_reviews(slug, prof, trace_course_rows, query, sanitize,

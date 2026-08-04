@@ -1,4 +1,5 @@
-backend/Better_Scraper/output_data
+backend/Better_Scraper/output_data*
+backend/Better_Scraper/rmp_snapshot_*
 scraper/data
 scraper/reddit_data
 .env

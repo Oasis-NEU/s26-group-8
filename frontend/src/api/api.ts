@@ -10,8 +10,21 @@ export interface Professor {
   name: string;
   dept: string;
   rmpRating: number | null;
+  /** rmpRating projected onto TRACE's scale — the value avgRating was actually
+   *  pooled from. RMP runs ~0.8 lower and 2.4x wider than TRACE, so the two raw
+   *  numbers are not comparable and avgRating lands outside them often enough to
+   *  read as broken (RMP 5.00 with TRACE 5.00 gave 4.99). Null unless the
+   *  professor has both sources: with RMP alone avgRating already is this value,
+   *  so showing it twice would imply a pooling that never happened. */
+  rmpAdjusted?: number | null;
   traceRating: number | null;
   avgRating: number;
+  /** Ratings: RMP ratings + TRACE overall-question responses. What the
+   *  leaderboard's floor gates on, and what the ranking weights by. */
+  totalReviews?: number;
+  /** Rows of written text: RMP comments + TRACE comment rows. Not a subset of
+   *  totalReviews and usually 2-3x larger, because TRACE stores one row per
+   *  open-ended question per student. Unused by the leaderboard. */
   totalComments?: number;
 }
 
@@ -42,13 +55,16 @@ export interface TraceCourse {
   overallRating?: number | null;
 }
 
+/** Per-star responses to TRACE's overall question, keyed by course code. Their
+ *  sum is the number of TRACE ratings for that course — the backend no longer
+ *  sends the section's `completed` (survey submitters), which was a larger,
+ *  different quantity that the profile page was displaying as a rating count. */
 export interface TraceRatingCounts {
   count1: number;
   count2: number;
   count3: number;
   count4: number;
   count5: number;
-  completed: number;
 }
 
 export interface ProfessorProfile {
@@ -288,6 +304,9 @@ export interface CatalogCourse {
   name: string;
   department: string;
   avgRating: number | null;
+  /* No isTopics here: the list has no use for it. A topics code arrives with
+     avgRating null, which is already how the list renders it — see
+     CourseSummary.isTopics, which the detail page does use. */
 }
 
 export interface CourseCatalogResponse {
@@ -305,6 +324,8 @@ export interface CourseSummary {
   avgEnrollment: number | null;
   latestTermTitle: string;
   ratingCount: number | null;
+  /** See CatalogCourse.isTopics. avgRating and ratingCount are null when set. */
+  isTopics?: boolean;
 }
 
 export interface CourseInstructorBreakdown {

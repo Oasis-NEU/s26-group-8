@@ -178,9 +178,16 @@ def build_reddit_rows(query_fn) -> list:
 
 def build_rmp_rows(query_fn) -> list:
     """Yield evidence rows from rmp_reviews, resolving course_code via TRACE validation."""
-    slug_by_key = {r["name_key"]: r["slug"]
-                   for r in query_fn("SELECT name_key, slug FROM professors_catalog", ())}
-    taught = {}  # name_key -> set(course_code) from TRACE
+    # trace_name_key exists because finalize.py always runs precompute.py (which
+    # rebuilds this table) immediately before this step.
+    catalog = query_fn("SELECT name_key, slug, trace_name_key FROM professors_catalog", ())
+    slug_by_key = {r["name_key"]: r["slug"] for r in catalog}
+    # RMP name_key -> TRACE name_key. A fuzzy-matched professor's TRACE sections
+    # are filed under a different name than their RMP reviews, so the course-code
+    # validation below has to cross over; precompute records which name to use.
+    trace_key_by_key = {r["name_key"]: (r.get("trace_name_key") or r["name_key"])
+                        for r in catalog}
+    taught = {}  # TRACE name_key -> set(course_code) from TRACE
     for r in query_fn("SELECT DISTINCT name_key, course_code FROM trace_courses", ()):
         nk = r.get("name_key")
         code = norm_code(r.get("course_code", ""))
@@ -192,11 +199,12 @@ def build_rmp_rows(query_fn) -> list:
     for r in rows:
         if not is_meaningful(r.get("comment")):
             continue
-        slug = slug_by_key.get(r.get("name_key"))
+        nk = r.get("name_key")
+        slug = slug_by_key.get(nk)
         if not slug:
             continue
         code = norm_code(r.get("course"))
-        prof_codes = taught.get(r.get("name_key"), set())
+        prof_codes = taught.get(trace_key_by_key.get(nk, nk), set())
         course_code = code if code in prof_codes else None
         meta = {
             "course": r.get("course"),
@@ -209,7 +217,14 @@ def build_rmp_rows(query_fn) -> list:
     return out
 
 def build_trace_rows(query_fn) -> list:
-    """Yield evidence rows from trace_comments joined to trace_courses + professors_catalog."""
+    """Yield evidence rows from trace_comments joined to trace_courses + professors_catalog.
+
+    Joins on the professor's TRACE-side name. A fuzzy-matched professor's catalog
+    row is keyed by the RMP spelling while their TRACE sections use another, so
+    joining on name_key alone dropped their TRACE comments from RAG citations
+    entirely — an INNER JOIN, so the loss was silent. COALESCE keeps exact matches
+    (trace_name_key IS NULL) working unchanged.
+    """
     rows = query_fn("""
         SELECT tc.id, tc.comment, c.name_key, c.course_code,
                p.slug AS professor_slug
@@ -217,7 +232,7 @@ def build_trace_rows(query_fn) -> list:
         JOIN trace_courses c
           ON tc.tc_course_id = c.course_id AND tc.tc_instructor_id = c.instructor_id
          AND tc.tc_term_id = c.term_id
-        JOIN professors_catalog p ON p.name_key = c.name_key
+        JOIN professors_catalog p ON COALESCE(p.trace_name_key, p.name_key) = c.name_key
         WHERE tc.comment IS NOT NULL AND tc.comment <> ''
         ORDER BY tc.id
     """, ())

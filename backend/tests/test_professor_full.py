@@ -42,13 +42,13 @@ class RecordingQuery:
             return [
                 {**base, "question": "Overall rating", "mean": 4.5,
                  "count_1": 0, "count_2": 0, "count_3": 1, "count_4": 2,
-                 "count_5": 7, "completed": 10},
+                 "count_5": 7},
                 {**base, "question": "How challenging", "mean": 3.5,
                  "count_1": 0, "count_2": 1, "count_3": 4, "count_4": 3,
-                 "count_5": 2, "completed": 10},
+                 "count_5": 2},
                 {**base, "question": "Hours per week", "mean": 6.0,
                  "count_1": 1, "count_2": 2, "count_3": 4, "count_4": 2,
-                 "count_5": 1, "completed": 10},
+                 "count_5": 1},
             ]
         if "from trace_courses" in s:
             return [{"course_id": 1, "term_id": 901, "term_title": "Fall 2023",
@@ -149,7 +149,17 @@ def test_full_rating_distribution_bucketed_by_course_code():
     dist = data["traceRatingCounts"]
     assert "CS3500" in dist
     assert dist["CS3500"]["count5"] == 7
-    assert dist["CS3500"]["completed"] == 10
+
+
+def test_rating_counts_carry_stars_only_not_the_sections_completed():
+    # The profile page's "Total Ratings" stat summed `completed` — students who
+    # submitted the survey — while the distribution underneath it summed these
+    # stars, so the card and its own bars disagreed, and neither matched the
+    # leaderboard. The stars are the ratings; nothing else ships.
+    data, _ = _build()
+    counts = data["traceRatingCounts"]["CS3500"]
+    assert "completed" not in counts
+    assert sum(counts[f"count{i}"] for i in range(1, 6)) == 10
 
 
 def test_full_blends_difficulty_from_rmp_and_trace():
@@ -173,14 +183,14 @@ def test_full_ratings_use_overall_course_not_law_overall_effectiveness():
                 return [
                     {**base, "question": "Overall Course", "mean": 2.5,
                      "count_1": 1, "count_2": 0, "count_3": 0, "count_4": 1,
-                     "count_5": 0, "completed": 2},
+                     "count_5": 0},
                     {**base, "question": "Overall Effectiveness", "mean": 3.0,
                      "count_1": 0, "count_2": 1, "count_3": 0, "count_4": 1,
-                     "count_5": 0, "completed": 2},
+                     "count_5": 0},
                     {**base, "question": "What is your overall rating of this "
                      "instructor teaching effectiveness?", "mean": 4.5,
                      "count_1": 0, "count_2": 0, "count_3": 0, "count_4": 1,
-                     "count_5": 1, "completed": 2},
+                     "count_5": 1},
                 ]
             if "from trace_courses" in s:
                 return [{"course_id": 2, "term_id": 159, "term_title": "Fall 2022 Law",
@@ -194,7 +204,9 @@ def test_full_ratings_use_overall_course_not_law_overall_effectiveness():
     dist = data["traceRatingCounts"]["LAW6101"]
     assert dist["count4"] == 2, "Overall Course + Bluera overall only"
     assert dist["count2"] == 0, "Overall Effectiveness counts must not leak into ratings"
-    assert dist["completed"] == 4
+    # 2 responses to 'Overall Course' + 2 to the Bluera question; the excluded
+    # Overall Effectiveness row contributes none.
+    assert sum(dist[f"count{i}"] for i in range(1, 6)) == 4
 
 
 def test_full_404_when_professor_missing():
