@@ -53,9 +53,36 @@ def fetch_existing_keys(conn, table: str, key_columns: list[str], key_query: str
         return set()
 
 
+def dedupe_rows(rows: list[tuple], columns: list[str],
+                dedupe_on: list[str], prefer: str) -> list[tuple]:
+    """Collapse rows sharing a conflict key, keeping the largest `prefer` value.
+
+    ON CONFLICT DO UPDATE is stricter than DO NOTHING: one INSERT carrying the
+    same conflict key twice fails outright with "cannot affect row a second
+    time", where DO NOTHING quietly dropped the repeat. The professor CSV has
+    such a pair today — two RMP profile pages for Hamid Nayeb Hashemi in
+    Mechanical Engineering, one a 0-rating stub — and every row goes out in one
+    statement at BATCH_SIZE 25,000, so the whole weekly load would fail.
+
+    Preferring the higher rating count picks the real page over the stub and
+    matches how precompute.merge_rmp_aliases chooses a primary among an RMP
+    professor's duplicate profiles. First-appearance order is preserved.
+    """
+    key_idx = [columns.index(c) for c in dedupe_on]
+    prefer_idx = columns.index(prefer)
+    best: dict = {}
+    for row in rows:
+        key = tuple(row[i] for i in key_idx)
+        current = best.get(key)
+        if current is None or (row[prefer_idx] or 0) > (current[prefer_idx] or 0):
+            best[key] = row
+    return list(best.values())
+
+
 def upload_csv(conn, table: str, columns: list[str], csv_path: str,
                transform=None, on_conflict: str = "",
-               key_columns: list[str] = None, existing_keys: set = None):
+               key_columns: list[str] = None, existing_keys: set = None,
+               dedupe_on: list[str] = None, dedupe_prefer: str = None):
     if not os.path.exists(csv_path):
         print(f"  File not found: {csv_path}")
         return
@@ -95,6 +122,11 @@ def upload_csv(conn, table: str, columns: list[str], csv_path: str,
 
             batch.append(values)
 
+            # Deduping needs the whole file in hand, so those tables buffer
+            # instead of streaming. Only rmp_professors does this (~3.9k rows).
+            if dedupe_on:
+                continue
+
             if len(batch) >= BATCH_SIZE:
                 with conn.cursor() as cur:
                     execute_values(cur, insert_sql, batch, page_size=BATCH_SIZE)
@@ -102,6 +134,13 @@ def upload_csv(conn, table: str, columns: list[str], csv_path: str,
                 total += len(batch)
                 print(f"  Uploaded {total:,} new rows (skipped {skipped:,} existing)...", end="\r")
                 batch = []
+
+        if dedupe_on:
+            before = len(batch)
+            batch = dedupe_rows(batch, columns, dedupe_on, dedupe_prefer)
+            if before != len(batch):
+                print(f"  Collapsed {before - len(batch):,} duplicate "
+                      f"{'/'.join(dedupe_on)} rows before upserting")
 
         if batch:
             with conn.cursor() as cur:
@@ -153,9 +192,25 @@ TABLES = {
             );
         """,
         "columns": ["name", "department", "rating", "num_ratings", "would_take_again_pct", "level_of_difficulty", "professor_url"],
-        "key_columns": ["name", "department"],
+        # No key_columns on purpose. Every other table here is append-only, so
+        # skipping rows the DB already has is free RUs. These rows are a summary
+        # that the weekly re-scrape is supposed to move: filtering them out
+        # client-side is what made the table insert-only, freezing each
+        # professor's numbers at whatever they were the first time we saw them.
+        # One scrape's drift across 3,861 professors present in both: rating
+        # moved for 315, num_ratings 533, would_take_again_pct 480,
+        # level_of_difficulty 331. ~3.9k rows a week is a rounding error in RUs.
         "csv": "rmp_professors.csv",
-        "on_conflict": "ON CONFLICT (name, department) DO NOTHING",
+        "dedupe_on": ["name", "department"],
+        "dedupe_prefer": "num_ratings",
+        "on_conflict": (
+            "ON CONFLICT (name, department) DO UPDATE SET "
+            "rating = EXCLUDED.rating, "
+            "num_ratings = EXCLUDED.num_ratings, "
+            "would_take_again_pct = EXCLUDED.would_take_again_pct, "
+            "level_of_difficulty = EXCLUDED.level_of_difficulty, "
+            "professor_url = EXCLUDED.professor_url"
+        ),
         "transform": lambda row: {
             "name": row.get("name", ""),
             "department": row.get("department", ""),
@@ -187,7 +242,18 @@ TABLES = {
             );
         """,
         "columns": ["professor_name", "department", "overall_rating", "course", "quality", "difficulty", "date", "tags", "attendance", "grade", "textbook", "online_class", "comment"],
-        # Lightweight proxy: skip by (professor, course, date) — avoids fetching full comment text
+        # Lightweight proxy: skip by (professor, course, date) — avoids pulling
+        # every stored comment back over the wire just to diff it.
+        #
+        # Deliberately coarser than the unique constraint, which also includes
+        # comment. The gap: a genuinely new review sharing professor, course and
+        # date with one already loaded is skipped client-side even though the DB
+        # would accept it. RMP timestamps carry seconds, so this is rare — 4
+        # such pairs in the current 44,536-row CSV, and both halves of a pair
+        # load fine on the run that first sees them (existing_keys is a snapshot
+        # taken before the run, so neither filters the other out). Only a review
+        # posted in a later week at the same second as an earlier one is lost.
+        # Widening the key means fetching ~44k comment bodies every run.
         "key_columns": ["professor_name", "course", "date"],
         "key_query": "SELECT DISTINCT professor_name, course, date FROM rmp_reviews",
         "csv": "rmp_reviews.csv",
@@ -417,7 +483,8 @@ def main():
         upload_csv(
             conn, table_name, conf["columns"], csv_path,
             conf.get("transform"), conf.get("on_conflict", ""),
-            key_columns, existing_keys
+            key_columns, existing_keys,
+            conf.get("dedupe_on"), conf.get("dedupe_prefer")
         )
         elapsed = time.time() - start
         print(f"  Time: {elapsed:.1f}s")

@@ -43,6 +43,20 @@ logger: logging.Logger = logging.getLogger(__name__)
 RATE_LIMIT_REQ_PER_SEC: float = 0.0  # 0 = disabled (no rate limiting from residential IP; probe showed zero 429s at 5,555 req/min)
 RATE_LIMIT_BURST: int = 0
 
+# How many professors may fail their review fetch before the run is called bad.
+# Exiting non-zero on the first failure meant one unlucky request cost every
+# professor a week of freshness, since the weekly workflow aborts before the DB
+# load and the data-store push. Above the threshold it is no longer flakiness —
+# a block, an API change — and aborting is right.
+MAX_TOLERATED_REVIEW_FAILURES_PCT: float = 1.0
+MIN_TOLERATED_REVIEW_FAILURES: int = 5   # floor, so a small school isn't stricter
+
+
+def failure_tolerance(attempted: int) -> int:
+    """How many failed review fetches a run may carry and still be trusted."""
+    return max(MIN_TOLERATED_REVIEW_FAILURES,
+               int(attempted * MAX_TOLERATED_REVIEW_FAILURES_PCT / 100))
+
 # ---------------------------------------------------------------------------
 # Token bucket rate limiter
 # ---------------------------------------------------------------------------
@@ -78,6 +92,58 @@ class TokenBucket:
 
 
 _bucket: TokenBucket = TokenBucket(RATE_LIMIT_REQ_PER_SEC, RATE_LIMIT_BURST)
+
+
+def load_previous_reviews(file_path: str) -> List[Dict[str, str]]:
+    """Last run's review rows, or [] on the first run. Must be called before
+    dump_reviews_to_csv truncates the file it is reading."""
+    if not os.path.exists(file_path):
+        return []
+    with open(file_path, "r", encoding="utf-8", errors="replace", newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def carried_forward_rows(
+    previous_rows: List[Dict[str, str]],
+    fresh_names: set,
+    failed_names: set,
+) -> List[Dict[str, str]]:
+    """Previous rows to re-emit for professors whose review fetch failed.
+
+    Tolerating a failure is only safe if the professor's reviews survive it.
+    precompute counts num_ratings from the rows present in this CSV, and
+    catalog_row emits rmp_rating=None at num_ratings 0 — so a tolerated
+    professor with no rows loses their rating on the site rather than merely
+    going stale.
+
+    Names, not ids, because the CSV has no id column. That is safe here only
+    because a name is skipped entirely once any professor carrying it produced
+    fresh rows: 49 scraped professors share a name with a different profile
+    page, and carrying one namesake's old rows alongside the other's fresh ones
+    would duplicate reviews. Conservative in the right direction — the worst
+    case is a namesake pair going stale together for a week.
+    """
+    resurrect = failed_names - fresh_names
+    if not resurrect:
+        return []
+    return [r for r in previous_rows if r.get("professor_name") in resurrect]
+
+
+class ProfessorFetchError(Exception):
+    """The teacher search stopped before RMP ran out of pages.
+
+    The phase-1 twin of ReviewFetchError, and the more destructive of the two.
+    precompute drops and rebuilds professors_catalog from the professor CSV, so
+    a short search truncates the live site, and the workflow then force-pushes
+    that CSV over the data store as an orphan commit — there is no history to
+    roll back to.
+
+    The old loop broke out of pagination on a failed request and returned what
+    it had, leaving only the workflow's row-count floor as a guard. That floor
+    did not cover the case it most needed to: 3,892 professors is four pages of
+    1,000, and losing the last (892 rows) left exactly 3,000 against a `< 3000`
+    check. Raising means a truncated search can never reach the CSV at all.
+    """
 
 
 class ReviewFetchError(Exception):
@@ -168,6 +234,9 @@ class RMPSchool:
         # graphql_id -> error, for professors whose reviews could not be fetched
         # at all. Keyed by id rather than name because names are not unique.
         self.failed_review_fetches: Dict[str, str] = {}
+        # Professors whose reviews we tried to fetch — the denominator the
+        # failure tolerance is measured against.
+        self.review_fetch_attempts: int = 0
 
         self._graphql_school_id: str = base64.b64encode(
             f"School-{school_id}".encode()
@@ -250,6 +319,12 @@ class RMPSchool:
     # ------------------------------------------------------------------
 
     def _collect_professors(self) -> None:
+        """Page through the teacher search until RMP says there is no next page.
+
+        Raises ProfessorFetchError rather than returning a short list — see the
+        exception's docstring for why a truncated search is worse than a
+        truncated review fetch.
+        """
         cursor: Optional[str] = None
         has_next: bool = True
         page_count: int = 0
@@ -259,8 +334,11 @@ class RMPSchool:
         while has_next:
             page_count += 1
             if page_count > MAX_SEARCH_PAGES:
-                print(f"\n  ⚠ Hit {MAX_SEARCH_PAGES}-page search limit — stopping pagination")
-                break
+                pbar.close()
+                raise ProfessorFetchError(
+                    f"hit the {MAX_SEARCH_PAGES}-page search limit with more pages "
+                    f"pending ({len(self.professors_list)} professors so far)"
+                )
             payload: Dict[str, Any] = {
                 "query": TEACHER_SEARCH_QUERY,
                 "variables": {
@@ -276,15 +354,22 @@ class RMPSchool:
 
             data: Optional[Dict[str, Any]] = self._graphql_post(payload)
             if not data:
-                print("\n  ✗ Failed to fetch professors")
-                break
+                pbar.close()
+                raise ProfessorFetchError(
+                    f"teacher search failed on page {page_count} "
+                    f"({len(self.professors_list)} professors collected before the failure)"
+                )
 
             search_data: Optional[Dict[str, Any]] = (
                 data.get("data", {}).get("search", {}).get("teachers", {})
             )
             if not search_data:
-                print(f"\n  ✗ Unexpected response: {json.dumps(data)[:200]}")
-                break
+                pbar.close()
+                raise ProfessorFetchError(
+                    f"unexpected response on page {page_count} "
+                    f"({len(self.professors_list)} professors collected): "
+                    f"{json.dumps(data)[:200]}"
+                )
 
             edges: List[Dict[str, Any]] = search_data.get("edges", [])
             page_info: Dict[str, Any] = search_data.get("pageInfo", {})
@@ -321,8 +406,15 @@ class RMPSchool:
             pbar.update(len(edges))
             has_next = page_info.get("hasNextPage", False)
             cursor = page_info.get("endCursor")
-            if not edges:
-                break
+            # An empty page is a complete answer only if RMP agrees it is the
+            # last one. Rows missing while a next page is promised means the
+            # cursor walk broke, which is data loss, not an empty school.
+            if not edges and has_next:
+                pbar.close()
+                raise ProfessorFetchError(
+                    f"page {page_count} returned no professors but RMP reports "
+                    f"another page ({len(self.professors_list)} professors collected)"
+                )
 
         pbar.close()
         print(f"  ✓ Collected {len(self.professors_list)} professors")
@@ -447,6 +539,7 @@ class RMPSchool:
             print(f"  Skipping {skipped} professors with 0 ratings")
 
         total: int = len(profs_with_ratings)
+        self.review_fetch_attempts = total
         total_reviews: int = 0
 
         # Outcome per professor: absent = fetched fine (possibly zero ratings),
@@ -535,7 +628,11 @@ class RMPSchool:
                 writer.writerow(prof.flat_csv_row())
         print(f"  ✓ Professor CSV saved to: {file_path}")
 
-    def dump_reviews_to_csv(self, file_path: str) -> None:
+    def dump_reviews_to_csv(
+        self, file_path: str, extra_rows: Optional[List[Dict[str, Any]]] = None
+    ) -> None:
+        """Write this run's reviews, plus any rows carried forward for
+        professors whose fetch failed (see carried_forward_rows)."""
         os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)
         fieldnames: List[str] = [
             "professor_name", "department", "overall_rating", "course",
@@ -543,11 +640,14 @@ class RMPSchool:
             "grade", "textbook", "online_class", "comment",
         ]
         with open(file_path, "w", newline="", encoding="utf-8") as f:
-            writer: csv.DictWriter = csv.DictWriter(f, fieldnames=fieldnames)
+            writer: csv.DictWriter = csv.DictWriter(
+                f, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
             for prof in self.professors_list:
                 for row in prof.review_csv_rows():
                     writer.writerow(row)
+            for row in extra_rows or []:
+                writer.writerow(row)
         print(f"  ✓ Reviews CSV saved to: {file_path}")
 
     def dump_to_json(self, file_path: str) -> None:
@@ -581,7 +681,16 @@ def main() -> None:
 
     args: argparse.Namespace = parser.parse_args()
 
-    school: RMPSchool = RMPSchool(args.sid, scrape_reviews=not args.no_reviews)
+    # A truncated search must not reach the CSV. Exit non-zero WITHOUT writing,
+    # so the previous data store snapshot survives untouched.
+    try:
+        school: RMPSchool = RMPSchool(args.sid, scrape_reviews=not args.no_reviews)
+    except ProfessorFetchError as e:
+        sys.exit(
+            f"✗ Scrape failed: {e}. RMP reported more professors than were "
+            "collected, so the result is incomplete. Aborting without writing "
+            "output to preserve existing data."
+        )
 
     # Fail loud instead of writing an empty CSV. For a fixed, populated school
     # an empty result never happens legitimately — it means RMP blocked the
@@ -604,23 +713,50 @@ def main() -> None:
 
     school.dump_professors_to_csv(professors_csv)
 
+    failures: Dict[str, str] = school.failed_review_fetches
+
     if not args.no_reviews:
-        school.dump_reviews_to_csv(professors_csv.replace("_professors.csv", "_reviews.csv"))
+        reviews_csv: str = professors_csv.replace("_professors.csv", "_reviews.csv")
+        # Read the old file before the write below truncates it, and keep the
+        # rows of any professor we failed to re-fetch. Without this, tolerating
+        # a failure costs that professor their rating rather than a week of
+        # freshness — precompute reads num_ratings off these rows.
+        carried: List[Dict[str, Any]] = []
+        if failures:
+            failed_names = {p.name for p in school.professors_list
+                            if p.graphql_id in failures}
+            fresh_names = {p.name for p in school.professors_list if p.reviews}
+            carried = carried_forward_rows(
+                load_previous_reviews(reviews_csv), fresh_names, failed_names)
+            if carried:
+                print(f"  ℹ Carried forward {len(carried)} previous reviews for "
+                      f"{len(failed_names - fresh_names)} professors whose fetch failed")
+        school.dump_reviews_to_csv(reviews_csv, extra_rows=carried)
 
     if args.json:
         school.dump_to_json(professors_csv.replace("_professors.csv", "_full.json"))
 
-    failures: Dict[str, str] = school.failed_review_fetches
+    attempted: int = school.review_fetch_attempts
     school.close()
     print("\n  Done!\n")
 
-    # Exit non-zero *after* writing, so the good rows are preserved but a run with
-    # genuinely missing reviews can't pass silently in CI. Professors that RMP
-    # simply has no ratings for are not counted here.
+    # Exit non-zero *after* writing, so the good rows are preserved. A handful of
+    # failed professors is flakiness and is now tolerated — they keep last run's
+    # reviews and the refresh proceeds for everyone else. Past the threshold it
+    # is a block or an API change, and stopping before the DB load is right.
     if failures:
-        sys.exit(
-            f"✗ {len(failures)} professors' reviews could not be fetched after 3 passes. "
-            "CSVs were written with everything else; re-run to fill the gaps."
+        tolerance: int = failure_tolerance(attempted)
+        if len(failures) > tolerance:
+            sys.exit(
+                f"✗ {len(failures)} of {attempted} professors' reviews could not be "
+                f"fetched after 3 passes, over the tolerance of {tolerance}. That is "
+                "a block or an API change rather than flakiness. CSVs were written, "
+                "but nothing downstream should trust them."
+            )
+        print(
+            f"  ⚠ {len(failures)} of {attempted} professors' reviews could not be "
+            f"fetched (tolerance {tolerance}). They keep their previous reviews; "
+            "the next run should pick them up."
         )
 
 

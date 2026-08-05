@@ -80,6 +80,34 @@ jobs:
             backend/requirements-dev.txt
       - run: pip install -r requirements.txt -r requirements-dev.txt
       - run: python -m pytest tests -q
+      # Better_Scraper/tests covers the RMP scraper's integrity guards (partial
+      # search, review-fetch failures, the pre-write sanity check). It was not
+      # collected by `pytest tests`, so those tests had never gated a push.
+      # Separate invocation: both directories are packages named `tests`, so
+      # collecting them together fails on the duplicate module name.
+      - run: python -m pytest Better_Scraper/tests -q
+
+  scraper:
+    name: Scraper tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: scraper
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: scraper/requirements.txt
+      - run: pip install -r requirements.txt pytest
+      # Covers the Banner pipeline's transport, sanity gates, loader and
+      # matcher. Its own job rather than a step on `backend`: these tests run
+      # from `scraper/` (the modules import each other as top-level names) and
+      # need a different dependency set. Like Better_Scraper/tests above, this
+      # suite existed but gated nothing until it was wired in here.
+      - run: python -m pytest tests -q
 
   secrets:
     name: Secret scan

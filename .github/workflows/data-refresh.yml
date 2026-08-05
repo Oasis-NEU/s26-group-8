@@ -5,9 +5,26 @@ on:
     - cron: "0 10 * * 0"  # 10:00 UTC every Sunday
   workflow_dispatch:
 
+# Only one refresh at a time. A manual dispatch overlapping the Sunday cron
+# would give two runs force-pushing the same orphan branch over the data store,
+# and two precomputes dropping and rebuilding professors_catalog underneath each
+# other. Queue rather than cancel: a cancelled run can stop between the DB write
+# and the store push, leaving the two out of step.
+concurrency:
+  group: data-refresh
+  cancel-in-progress: false
+
+# Nothing here reads or writes the repo through GITHUB_TOKEN — the data store is
+# pushed with RMH_DATA_TOKEN — so drop the default write scopes.
+permissions:
+  contents: read
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    # The scrape is ~3.9k professors over 10 threads plus a full precompute.
+    # Without a cap a hung request rides the 6-hour default.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -32,6 +49,17 @@ jobs:
             "https://x-access-token:${RMH_DATA_TOKEN}@github.com/RayanR000/RateMyHusky-data.git" \
             backend/Better_Scraper/output_data
 
+      # Record what the store held BEFORE the scrape overwrites it, so the
+      # sanity check below can compare against real numbers instead of a static
+      # floor. Written to the runner temp, not into output_data — that
+      # directory is the data-store working tree and gets `git add -A`'d.
+      - name: Record pre-scrape baseline
+        working-directory: backend
+        run: |
+          python Better_Scraper/scrape_guard.py baseline \
+            --data-dir Better_Scraper/output_data \
+            --out "${{ runner.temp }}/rmp_baseline.json"
+
       - name: RMP scrape
         working-directory: backend
         run: |
@@ -41,46 +69,36 @@ jobs:
 
       # Guardrail: a broken/rate-limited scrape returns near-empty results.
       # Abort before touching the DB or the data store so good data survives.
-      # Floors are ~70-80% of the normal haul (≈3,889 profs / ≈44.5k reviews);
-      # the professor floor sits above a lost 1,000-row search page, and both
-      # phases are checked since reviews can fail while professors succeed.
+      # See scrape_guard.py for what it checks and why the floors are relative
+      # to the previous snapshot rather than fixed.
       - name: Sanity check scrape
         working-directory: backend
         run: |
-          # precompute.py reads all six CSVs; a missing TRACE/photo file crashes
-          # it mid-run. Fail loud here before touching the DB. trace_comments may
-          # be shipped as .csv or .zip (precompute falls back), so accept either.
-          data_dir="Better_Scraper/output_data"
-          for f in rmp_professors.csv rmp_reviews.csv trace_courses.csv trace_scores.csv professor_photos.csv; do
-            if [ ! -f "$data_dir/$f" ]; then
-              echo "::error::Missing required data file: $f. Aborting before DB writes."
-              exit 1
-            fi
-          done
-          if [ ! -f "$data_dir/trace_comments.csv" ] && [ ! -f "$data_dir/trace_comments.zip" ]; then
-            echo "::error::Missing trace_comments (.csv or .zip). Aborting before DB writes."
-            exit 1
-          fi
-          profs=$(python -c "import pandas as pd; print(len(pd.read_csv('$data_dir/rmp_professors.csv')))")
-          reviews=$(python -c "import pandas as pd; print(len(pd.read_csv('$data_dir/rmp_reviews.csv')))")
-          echo "Scraped $profs professors, $reviews reviews"
-          if [ "$profs" -lt 3000 ]; then
-            echo "::error::Only $profs professors scraped (< 3000 floor). Aborting to protect existing data."
-            exit 1
-          fi
-          if [ "$reviews" -lt 30000 ]; then
-            echo "::error::Only $reviews reviews scraped (< 30000 floor). Aborting to protect existing data."
-            exit 1
-          fi
+          python Better_Scraper/scrape_guard.py check \
+            --data-dir Better_Scraper/output_data \
+            --baseline "${{ runner.temp }}/rmp_baseline.json"
 
       # Upsert the freshly scraped RMP rows into the raw DB tables so new
-      # review text / new professors reach the site. Idempotent — skips rows
-      # already present, so weekly writes are just the delta.
+      # review text / new professors reach the site. Idempotent either way:
+      # reviews are append-only, so rows already present are skipped and the
+      # write is just the delta; professor summary rows are re-sent in full and
+      # overwritten, because a re-scrape is supposed to move their numbers.
       - name: Load fresh RMP rows into CockroachDB
         working-directory: backend
         env:
           CRDB_DATABASE_URL: ${{ secrets.CRDB_DATABASE_URL }}
         run: python migrate_to_crdb.py rmp_professors rmp_reviews
+
+      # The other half of that upsert: migrate_to_crdb only inserts, so reviews
+      # deleted on RMP stay in the table and keep being rendered even though the
+      # count beside them (counted from the CSV by precompute) has already
+      # dropped. Runs after the load so the fresh rows are in, and before
+      # precompute so the list and the count describe the same set.
+      - name: Prune reviews RMP no longer serves
+        working-directory: backend
+        env:
+          CRDB_DATABASE_URL: ${{ secrets.CRDB_DATABASE_URL }}
+        run: python prune_rmp_reviews.py
 
       # RMP-only refresh: TRACE data is unchanged this run, so skip the heavy
       # TRACE table maintenance (REFRESH_TRACE=false). Run a full precompute
