@@ -117,6 +117,27 @@ ALIAS_MAP = {
     "sarthak gupta": "sarthak suhrid gupta",
 }
 
+
+# Distinct people the surname fuzzy match in precompute.attach_fuzzy_trace
+# would otherwise merge, because one first name is a prefix of the other the
+# same way a nickname is: "yan" of "yaning", "michael" of "michaela". ALIAS_MAP
+# cannot express this — it maps a name onto another name, and what is needed
+# here is the refusal to.
+#
+# Nothing lexical separates these from "dan" -> "daniel", and department does
+# not either: cross-college teaching is common, so a college mismatch flagged
+# three legitimate matches (Lungeanu, Koloski, Laverdiere) for every real
+# collision it caught. Entries are added by hand when someone spots one.
+#
+# michaela lewis is *also* caught by the trace_courses check in
+# attach_fuzzy_trace, which needs no list; she is here so the pair is recorded
+# in one place if her TRACE courses ever go away.
+FUZZY_DENY = {
+    ("yan li", "yaning li"),
+    ("michaela lewis", "michael lewis"),
+}
+
+
 def _normalize_name(name: str) -> str:
     import re, unicodedata
     s = str(name).strip().lower()
@@ -126,3 +147,4 @@ def _normalize_name(name: str) -> str:
 
 # Ensure keys/values match normalize_name() used by server.py/precompute.py.
 ALIAS_MAP = {_normalize_name(k): _normalize_name(v) for k, v in ALIAS_MAP.items()}
+FUZZY_DENY = {(_normalize_name(a), _normalize_name(b)) for a, b in FUZZY_DENY}

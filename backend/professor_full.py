@@ -127,7 +127,6 @@ def _scan_trace_scores(name_key, query):
 def build_profile_unauthed(prof, trace_course_rows, query):
     """Build the unauthenticated profile dict from an already-fetched catalog
     row and trace_courses rows (no further catalog/course lookups)."""
-    name_key = prof["name_key"]
     profile = {
         "name": prof["name"],
         "department": prof["department"],
@@ -144,8 +143,10 @@ def build_profile_unauthed(prof, trace_course_rows, query):
         "hoursPerWeek": round(prof["avg_hours"], 1) if prof["avg_hours"] else None,
     }
 
+    # TRACE scores are filed under the TRACE spelling of the name, which is not
+    # prof["name_key"] for a fuzzy-matched professor. See trace_key.
     (challeng_by_ct, hours_by_ct, rating_dist_by_course,
-     challeng_sum, challeng_weight) = _scan_trace_scores(name_key, query)
+     challeng_sum, challeng_weight) = _scan_trace_scores(trace_key(prof), query)
 
     trace_avg_difficulty = round(challeng_sum / challeng_weight, 2) if challeng_weight > 0 else None
     profile["traceRatingCounts"] = rating_dist_by_course
@@ -288,8 +289,10 @@ def build_full(slug, query, query_one, sanitize,
     if not prof:
         return None
 
-    name_key = prof["name_key"]
-    trace_course_rows = build_trace_course_rows(name_key, query)
+    # trace_key, not name_key: these rows are the professor's course list and the
+    # (course, instructor, term) keys every TRACE comment is looked up through, so
+    # a fuzzy-matched professor gets an empty page under the RMP spelling.
+    trace_course_rows = build_trace_course_rows(trace_key(prof), query)
 
     profile = build_profile_unauthed(prof, trace_course_rows, query)
     reviews = build_reviews(slug, prof, trace_course_rows, query, sanitize,

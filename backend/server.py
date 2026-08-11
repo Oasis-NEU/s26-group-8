@@ -1074,7 +1074,12 @@ def professor_profile(slug):
     if not prof:
         return jsonify({"error": "Professor not found"}), 404
 
-    name_key = prof["name_key"]
+    # Every lookup in this route is TRACE-side, so it keys on the TRACE spelling
+    # of the name rather than prof["name_key"] — they differ for a fuzzy-matched
+    # professor, whose scores are filed under the name TRACE uses. The reviews
+    # route below has RMP-side lookups too and keeps both keys apart. See
+    # professor_full.trace_key.
+    trace_name = trace_key(prof)
 
     profile = {
         "name": prof["name"],
@@ -1100,7 +1105,7 @@ def professor_profile(slug):
                section, enrollment, instructor_id
         FROM trace_courses WHERE name_key = %s
         ORDER BY term_id DESC
-    """, (name_key,))
+    """, (trace_name,))
 
     if is_authed:
         if trace_course_rows:
@@ -1161,7 +1166,7 @@ def professor_profile(slug):
                 WHERE tc.name_key = %s AND LOWER(ts.question) LIKE '%%overall%%'
                   AND LOWER(ts.question) != 'overall effectiveness'
                 GROUP BY tc.display_name
-            """, (name_key,))
+            """, (trace_name,))
             rating_dist_by_course = {}
             for r in rating_dist_rows:
                 dn = str(r["display_name"] or "")
@@ -1337,7 +1342,7 @@ def professor_profile(slug):
              AND ts.instructor_id = tc.instructor_id
              AND ts.term_id = tc.term_id
             WHERE tc.name_key = %s AND lower(ts.question) LIKE '%%challeng%%'
-        """, (name_key,))
+        """, (trace_name,))
 
         challeng_sum, challeng_weight = 0.0, 0
         challeng_by_ct = {}
@@ -1375,7 +1380,7 @@ def professor_profile(slug):
              AND ts.term_id = tc.term_id
             WHERE tc.name_key = %s AND lower(ts.question) LIKE '%%overall%%'
               AND lower(ts.question) != 'overall effectiveness'
-        """, (name_key,))
+        """, (trace_name,))
         rating_dist_by_course = {}
         for s in overall_rows:
             dn = str(s["display_name"] or "")
@@ -1401,7 +1406,7 @@ def professor_profile(slug):
              AND ts.instructor_id = tc.instructor_id
              AND ts.term_id = tc.term_id
             WHERE tc.name_key = %s AND lower(ts.question) LIKE '%%hours%%'
-        """, (name_key,))
+        """, (trace_name,))
         hours_by_ct = {}
         for s in hours_rows:
             key = (int(s["course_id"]), int(s["term_id"] or 0))
@@ -1471,15 +1476,21 @@ def professor_reviews(slug):
         resp.headers["Vary"] = "Authorization"
         return resp
 
-    prof = query_one("SELECT name_key FROM professors_catalog WHERE slug = %s", (slug,))
+    # SELECT *, not an explicit column list: trace_key needs trace_name_key, and
+    # naming it here would 500 this route against a catalog built before the
+    # column existed. Same reason course_profile and _resolve_professor do.
+    prof = query_one("SELECT * FROM professors_catalog WHERE slug = %s", (slug,))
     if not prof:
         name_key = slug.strip().lower().replace("-", " ")
         name_key = ALIAS_MAP.get(name_key, name_key)
-        prof = query_one("SELECT name_key FROM professors_catalog WHERE name_key = %s", (name_key,))
+        prof = query_one("SELECT * FROM professors_catalog WHERE name_key = %s", (name_key,))
     if not prof:
         return jsonify({"error": "Professor not found"}), 404
 
+    # Two keys, deliberately: RMP reviews are stored under the RMP spelling and
+    # TRACE courses under TRACE's, and they differ for a fuzzy-matched professor.
     name_key = prof["name_key"]
+    trace_name = trace_key(prof)
 
     # ── RMP reviews ──
     review_rows = query("""
@@ -1506,7 +1517,7 @@ def professor_reviews(slug):
     # ── TRACE comments ──
     trace_course_rows = query(
         "SELECT course_id, term_id, instructor_id FROM trace_courses WHERE name_key = %s",
-        (name_key,)
+        (trace_name,)
     )
 
     comments = []

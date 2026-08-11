@@ -57,7 +57,7 @@ def upgrade_image_url(url):
     return re.sub(r'-\d+x\d+(?=\.\w+$)', '', str(url))
 
 
-from prof_aliases import ALIAS_MAP
+from prof_aliases import ALIAS_MAP, FUZZY_DENY
 
 COLLEGE_MAP = {
     "Computer Science": "Khoury", "Information Science": "Khoury",
@@ -372,6 +372,106 @@ def trace_review_counts(overall_merged):
         overall_merged["total_responses"], errors="coerce").fillna(0)
     return {k: int(v) for k, v in
             responses.groupby(overall_merged["name_key"]).sum().items()}
+
+
+def attach_fuzzy_trace(rmp_profs, trace_lookup, trace_reviews_lookup,
+                       trace_dept_lookup, hours_lookup, trace_name_keys=()):
+    """Attach TRACE data to professors the name join missed, by surname match.
+
+    RMP and TRACE spell the same professor differently — "dan koloski" against
+    "daniel koloski" — so a professor with no exact-name match falls back to a
+    shared surname plus one first name being a prefix of the other, and the two
+    agreeing on college. A nickname that is not a prefix ("meg" for "margaret")
+    is out of reach of this rule and needs a hand-written entry in
+    prof_aliases.ALIAS_MAP instead.
+
+    Two guards, because the prefix rule cannot tell a nickname from a collision:
+    "michael" is a prefix of "michaela" exactly the way "dan" is of "daniel".
+
+    `trace_name_keys` is every name TRACE files courses under. A professor whose
+    own name is in it already has a TRACE identity, so there is no other
+    spelling to go looking for and any match would be to someone else. Michaela
+    Lewis has nine TRACE courses and no survey responses at all; her
+    trace_overall was NaN for want of scores, not for want of a name, and the
+    match handed her Michael Lewis's Law courses and comments in production.
+
+    prof_aliases.FUZZY_DENY covers the rest by hand. Yan Li has no TRACE courses
+    under her own name, so nothing here distinguishes her from a nickname and
+    nothing automatic will.
+
+    Department was tried as a third guard and removed: cross-college teaching is
+    common enough that a college mismatch rejected three correct matches
+    (Lungeanu, Koloski, Laverdiere) for the one collision it caught.
+
+    Records the TRACE name it chose in `_trace_name_key`, which is the part that
+    matters downstream: every read path joins TRACE courses, comments and rating
+    distributions on `name_key`, so a professor matched under a different name
+    displayed a TRACE rating with none of the evidence behind it — 50 of them in
+    production on the 2026-08-11 corpus. professor_full.trace_key() reads the
+    stored name; None means no fuzzy match happened and name_key is already the
+    right key, which is also what a catalog built before the column existed says.
+
+    Writes in place, only to rows the exact join left unmatched; returns how many
+    professors were matched.
+    """
+    rmp_profs["_trace_name_key"] = None
+    if rmp_profs.empty:
+        return 0
+
+    trace_by_last = {}
+    for tn in trace_lookup.keys():
+        parts = tn.split()
+        if len(parts) >= 2:
+            trace_by_last.setdefault(parts[-1], []).append(tn)
+
+    trace_name_keys = set(trace_name_keys)
+    matched = 0
+    for idx in rmp_profs[rmp_profs["trace_overall"].isna()].index:
+        rmp_key = rmp_profs.at[idx, "_name_key"]
+        # TRACE already knows this name; nothing to go looking for.
+        if rmp_key in trace_name_keys:
+            continue
+        rmp_parts = rmp_key.split()
+        if len(rmp_parts) < 2:
+            continue
+        rmp_first, rmp_last = rmp_parts[0], rmp_parts[-1]
+        for tc_name in trace_by_last.get(rmp_last, []):
+            tc_first = tc_name.split()[0]
+            if tc_first.startswith(rmp_first) or rmp_first.startswith(tc_first):
+                # `continue`, not `break`: this candidate is wrong, which does
+                # not mean the surname is exhausted.
+                if (rmp_key, tc_name) in FUZZY_DENY:
+                    continue
+                rmp_profs.at[idx, "trace_overall"] = trace_lookup.get(tc_name)
+                rmp_profs.at[idx, "trace_reviews"] = trace_reviews_lookup.get(tc_name, 0)
+                rmp_profs.at[idx, "trace_dept"] = trace_dept_lookup.get(tc_name)
+                rmp_profs.at[idx, "_trace_name_key"] = tc_name
+                if rmp_profs.at[idx, "avg_hours"] != rmp_profs.at[idx, "avg_hours"]:  # isnan
+                    rmp_profs.at[idx, "avg_hours"] = hours_lookup.get(tc_name)
+                matched += 1
+                break
+    return matched
+
+
+def catalog_comment_count(name_key, trace_name_key, rmp_counts, trace_counts):
+    """Comments to store for a catalog row, summed from both sources separately.
+
+    The two halves are filed under different names for a fuzzy-matched
+    professor: RMP comments under the RMP spelling, TRACE comments under the one
+    TRACE uses. A single lookup into a combined count therefore drops one half
+    whichever key it is given — "dan koloski" finds his 4 RMP comments and none
+    of the 881 TRACE ones, "daniel koloski" the reverse.
+
+    server.py's leaderboard already sums the halves this way (see the
+    comment_counts block beside RANKING_SCORE_SQL), and the stored column has to
+    agree with it: the catalog list sorts on the stored value while the board
+    shows the computed one, so a professor disagreeing between the two pages is
+    the visible symptom.
+
+    trace_name_key is None for an exact match, where both halves share name_key.
+    """
+    return (int(rmp_counts.get(name_key, 0))
+            + int(trace_counts.get(trace_name_key or name_key, 0)))
 
 
 def apply_counted_rmp_rating(rmp_profs, review_keys, review_quality):
@@ -872,29 +972,12 @@ def main():
     rmp_profs["trace_dept"] = rmp_profs["_name_key"].map(trace_dept_lookup)
     rmp_profs["avg_hours"] = rmp_profs["_name_key"].map(hours_lookup)
 
-    # Fuzzy match unmatched
-    trace_by_last = {}
-    for tn in trace_lookup.keys():
-        parts = tn.split()
-        if len(parts) >= 2:
-            trace_by_last.setdefault(parts[-1], []).append(tn)
-
-    unmatched = rmp_profs["trace_overall"].isna()
-    for idx in rmp_profs[unmatched].index:
-        rmp_key = rmp_profs.at[idx, "_name_key"]
-        rmp_parts = rmp_key.split()
-        if len(rmp_parts) < 2:
-            continue
-        rmp_first, rmp_last = rmp_parts[0], rmp_parts[-1]
-        for tc_name in trace_by_last.get(rmp_last, []):
-            tc_first = tc_name.split()[0]
-            if tc_first.startswith(rmp_first) or rmp_first.startswith(tc_first):
-                rmp_profs.at[idx, "trace_overall"] = trace_lookup.get(tc_name)
-                rmp_profs.at[idx, "trace_reviews"] = trace_reviews_lookup.get(tc_name, 0)
-                rmp_profs.at[idx, "trace_dept"] = trace_dept_lookup.get(tc_name)
-                if rmp_profs.at[idx, "avg_hours"] != rmp_profs.at[idx, "avg_hours"]:  # isnan
-                    rmp_profs.at[idx, "avg_hours"] = hours_lookup.get(tc_name)
-                break
+    # Fuzzy match unmatched, recording which TRACE name each one matched so the
+    # read path can find their courses and comments. See attach_fuzzy_trace.
+    fuzzy_matched = attach_fuzzy_trace(
+        rmp_profs, trace_lookup, trace_reviews_lookup, trace_dept_lookup, hours_lookup,
+        trace_name_keys=tc["name_key"])
+    print(f"Fuzzy-matched {fuzzy_matched} professors to a differently-spelled TRACE name")
 
     # RMP's numRatings counter is a stale aggregate, so count the ratings we
     # actually hold instead. Runs before total_reviews and the blend, both of
@@ -935,9 +1018,14 @@ def main():
     )
     trace_comment_counts = trace_with_nk.groupby("name_key").size()
 
-    # Combine
-    comment_counts_lookup = (rmp_comment_counts.add(trace_comment_counts, fill_value=0)).fillna(0).astype(int).to_dict()
-    print(f"Computed comment counts for {len(comment_counts_lookup)} professors")
+    # Kept apart rather than combined into one per-name total: a fuzzy-matched
+    # professor's two halves are filed under two different names, so they can
+    # only be added once the row being built says which names those are. See
+    # catalog_comment_count.
+    rmp_comment_counts_lookup = rmp_comment_counts.astype(int).to_dict()
+    trace_comment_counts_lookup = trace_comment_counts.astype(int).to_dict()
+    print("Computed comment counts for "
+          f"{len(set(rmp_comment_counts_lookup) | set(trace_comment_counts_lookup))} professors")
 
     # ── Build catalog rows ──
     catalog_rows = []
@@ -989,6 +1077,8 @@ def main():
         if pd.notna(row.get("avg_hours")) and float(row["avg_hours"]) > 0:
             avg_hours = round(float(row["avg_hours"]), 2)
 
+        trace_name_key = row["_trace_name_key"] if pd.notna(row["_trace_name_key"]) else None
+
         catalog_rows.append((
             slug, display_name, row["_name_key"], dept, college,
             float(row["avg_rating"]) if pd.notna(row["avg_rating"]) else None,
@@ -1001,7 +1091,11 @@ def main():
             float(focus_x_lookup.get(row["_name_key"], 50.0)),
             float(focus_y_lookup.get(row["_name_key"], 30.0)),
             avg_hours,
-            comment_counts_lookup.get(row["_name_key"], 0),
+            catalog_comment_count(row["_name_key"], trace_name_key,
+                                  rmp_comment_counts_lookup, trace_comment_counts_lookup),
+            # Only set when the fuzzy match found this professor under a
+            # different TRACE spelling; see attach_fuzzy_trace.
+            trace_name_key,
         ))
 
     # TRACE-only professors
@@ -1032,7 +1126,11 @@ def main():
             float(focus_x_lookup.get(nk, 50.0)),
             float(focus_y_lookup.get(nk, 30.0)),
             avg_hours_t,
-            comment_counts_lookup.get(nk, 0),
+            catalog_comment_count(nk, None,
+                                  rmp_comment_counts_lookup, trace_comment_counts_lookup),
+            # No trace_name_key: a TRACE-only professor's name_key already is the
+            # TRACE name, so there is nothing to redirect.
+            None,
         ))
 
     print(f"Built catalog with {len(catalog_rows)} professors")
@@ -1104,14 +1202,24 @@ def main():
             focus_x FLOAT,
             focus_y FLOAT,
             avg_hours FLOAT,
-            total_comments INT DEFAULT 0
+            total_comments INT DEFAULT 0,
+            -- The TRACE spelling of this professor's name, when the fuzzy match
+            -- had to reach for a different one. NULL means name_key is already
+            -- the TRACE key. professor_full.trace_key() is the only reader.
+            --
+            -- Appended last, not slotted beside name_key where it belongs:
+            -- scraper/match_professors.py reads catalog rows out of a SQL backup
+            -- by hardcoded column position, so inserting mid-table silently
+            -- shifts every field after it into the wrong slot.
+            trace_name_key TEXT
         )
     """)
     chunk_insert(cur, """
         INSERT INTO professors_catalog_new
         (slug, name, name_key, department, college, avg_rating, rmp_rating, trace_rating,
          num_ratings, trace_reviews, total_reviews, would_take_again_pct, difficulty,
-         professor_url, image_url, focus_x, focus_y, avg_hours, total_comments)
+         professor_url, image_url, focus_x, focus_y, avg_hours, total_comments,
+         trace_name_key)
         VALUES %s
     """, catalog_rows)
     cur.execute("CREATE INDEX idx_pc_name_key ON professors_catalog_new (name_key)")
