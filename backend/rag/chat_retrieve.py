@@ -185,22 +185,18 @@ def resolve_entity(query, hint, prof_search_fn, limit=1):
 
 def fetch_facts(slug, query_one_fn, query_fn):
     prof = query_one_fn("""
-        SELECT slug, name_key, trace_name_key, name, department, rmp_rating, trace_rating,
-               avg_rating, difficulty, would_take_again_pct, total_reviews, avg_hours
+        SELECT slug, name_key, name, department, rmp_rating, trace_rating, avg_rating,
+               difficulty, would_take_again_pct, total_reviews, avg_hours
         FROM professors_catalog WHERE slug = %s
     """, (slug,))
     if not prof:
         return {}
     name_key = prof.get("name_key")
-    # Fuzzy-matched professors carry their TRACE rows under a different name than
-    # RMP uses. Without this, Ask reports "no courses" and undercounts comments for
-    # exactly the professors whose profile page resolves them correctly.
-    trace_nk = prof.get("trace_name_key") or name_key
     course_rows = query_fn("""
         SELECT DISTINCT display_name FROM trace_courses
         WHERE name_key = %s AND display_name IS NOT NULL
         ORDER BY display_name LIMIT 25
-    """, (trace_nk,))
+    """, (name_key,))
     seen, courses = set(), []
     for c in course_rows:
         label = _clean_course_label(c.get("display_name"))
@@ -218,7 +214,7 @@ def fetch_facts(slug, query_one_fn, query_fn):
               AND tc.tc_instructor_id = tc2.instructor_id AND tc.tc_term_id = tc2.term_id
             WHERE tc2.name_key = %s AND tc.comment IS NOT NULL AND tc.comment != ''
         ) sub
-    """, (name_key, trace_nk))   # RMP under the RMP name, TRACE under the TRACE name
+    """, (name_key, name_key))
     return {
         "kind": "professor",
         "name": prof.get("name"), "department": prof.get("department"),

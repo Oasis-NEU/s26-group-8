@@ -11,10 +11,10 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
-DATABASE_URL = os.getenv("CRDB_DATABASE_URL")
+DATABASE_URL = os.getenv("NEW_CRDB_DATABASE_URL") or os.getenv("CRDB_DATABASE_URL")
 
 if not DATABASE_URL:
-    sys.exit("Missing CRDB_DATABASE_URL in backend/.env")
+    sys.exit("Missing NEW_CRDB_DATABASE_URL / CRDB_DATABASE_URL in backend/.env")
 
 import psycopg2
 from psycopg2.extras import execute_values
@@ -23,8 +23,15 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "Better_Scraper", "output_dat
 BATCH_SIZE = 25000  # smaller batches to stay under CockroachDB lock-tracking budget
 
 
-def get_connection():
-    return psycopg2.connect(DATABASE_URL, sslmode="require")
+def get_connection(attempts=20):
+    """The local resolver flakes on *.cockroachlabs.cloud; retry on DNS failure."""
+    for i in range(attempts):
+        try:
+            return psycopg2.connect(DATABASE_URL, sslmode="require")
+        except psycopg2.OperationalError as e:
+            if "could not translate host name" not in str(e) or i == attempts - 1:
+                raise
+            time.sleep(2)
 
 
 def create_table(conn, sql: str):
@@ -48,9 +55,12 @@ def fetch_existing_keys(conn, table: str, key_columns: list[str], key_query: str
         if len(key_columns) == 1:
             return {row[0] for row in rows}
         return {row for row in rows}
-    except Exception:
+    except Exception as e:
         conn.rollback()
-        return set()
+        # Returning an empty set silently disables the client-side pre-filter and
+        # re-sends the whole CSV through server-side conflict checks — an
+        # unattended RU burn. Fail loud; the weekly run self-heals next attempt.
+        raise RuntimeError(f"fetch_existing_keys failed for {table}: {e}") from e
 
 
 def upload_csv(conn, table: str, columns: list[str], csv_path: str,
@@ -321,6 +331,12 @@ TABLES = {
 }
 
 
+# Full-replace is only safe for tables whose CSV is a complete snapshot of the
+# source each run (the weekly RMP scrape). TRACE/photo CSVs are cumulative
+# artifacts — replacing from them would destroy data.
+REPLACE_ALLOWED = {"rmp_professors", "rmp_reviews"}
+
+
 UNIQUE_CONSTRAINTS = {
     "trace_courses": ("uq_trace_courses", "(course_id, instructor_id, term_id)"),
     "trace_scores": ("uq_trace_scores", "(course_id, instructor_id, term_id, question)"),
@@ -362,7 +378,9 @@ def purge_new_scraper_rows(conn):
 
 
 def main():
-    targets = sys.argv[1:] if len(sys.argv) > 1 else ["trace_comments"]
+    args = sys.argv[1:]
+    replace = "--replace" in args
+    targets = [a for a in args if not a.startswith("--")] or ["trace_comments"]
 
     if targets == ["purge-new"]:
         conn = get_connection()
@@ -384,6 +402,11 @@ def main():
     if targets == ["all"]:
         targets = list(TABLES.keys())
 
+    if replace:
+        bad = [t for t in targets if t not in REPLACE_ALLOWED]
+        if bad:
+            sys.exit(f"--replace only supported for {sorted(REPLACE_ALLOWED)}, got: {bad}")
+
     conn = get_connection()
     print("Connected to CockroachDB!")
 
@@ -402,10 +425,22 @@ def main():
         print(f"  Creating table if not exists...")
         create_table(conn, conf["create_sql"])
 
+        # Full replace: empty the table so RMP-side deletions/edits stop drifting
+        # (the upsert path never deletes or updates). Only runs after the workflow's
+        # sanity floors passed, so the CSV is known-good. rmp_reviews.name_key is
+        # NULL from here until precompute step 5 refills it later in the same run.
+        if replace:
+            if not os.path.exists(csv_path):
+                sys.exit(f"--replace: {csv_path} missing; refusing to truncate {table_name}")
+            print(f"  Truncating {table_name} for full replace...")
+            with conn.cursor() as cur:
+                cur.execute(f"TRUNCATE TABLE {table_name}")
+            conn.commit()
+
         # Pre-fetch existing keys to filter client-side (saves RUs)
         key_columns = conf.get("key_columns")
         existing_keys = set()
-        if key_columns:
+        if key_columns and not replace:
             print(f"  Fetching existing keys for client-side filtering...")
             existing_keys = fetch_existing_keys(
                 conn, table_name, key_columns, conf.get("key_query")

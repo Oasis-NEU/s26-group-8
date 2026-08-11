@@ -11,6 +11,4 @@ openai
 onnxruntime
 tokenizers
 huggingface_hub
-pandas
 numpy
-tqdm

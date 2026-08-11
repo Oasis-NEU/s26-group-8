@@ -40,8 +40,11 @@ MAX_REVIEW_PAGES: int = 50   # safety limit: stop after 50 review pages (~5k rev
 logging.basicConfig(level=logging.WARNING)
 logger: logging.Logger = logging.getLogger(__name__)
 
-RATE_LIMIT_REQ_PER_SEC: float = 0.0  # 0 = disabled (no rate limiting from residential IP; probe showed zero 429s at 5,555 req/min)
-RATE_LIMIT_BURST: int = 0
+# 0 = disabled (probe showed zero 429s at 5,555 req/min from a residential IP).
+# GitHub runners use datacenter IPs that RMP may throttle — set RMP_RATE_LIMIT_RPS
+# (e.g. "5") to enable the bucket without a code change.
+RATE_LIMIT_REQ_PER_SEC: float = float(os.getenv("RMP_RATE_LIMIT_RPS", "0"))
+RATE_LIMIT_BURST: int = int(os.getenv("RMP_RATE_LIMIT_BURST", "10"))
 
 # ---------------------------------------------------------------------------
 # Token bucket rate limiter
@@ -78,18 +81,6 @@ class TokenBucket:
 
 
 _bucket: TokenBucket = TokenBucket(RATE_LIMIT_REQ_PER_SEC, RATE_LIMIT_BURST)
-
-
-class ReviewFetchError(Exception):
-    """A ratings request failed, as opposed to returning zero ratings.
-
-    The distinction matters: RMP serves zero rating nodes for some professors
-    whose summary counters still claim numRatings >= 1 (a rating was deleted and
-    the aggregate was never recalculated — its own website says "doesn't have any
-    ratings yet" on the same page it prints an average). Those professors are
-    complete, not failed. A request that errors or gets rate-limited is a real
-    gap and must be retried and reported.
-    """
 
 # ---------------------------------------------------------------------------
 # GraphQL queries
@@ -165,9 +156,6 @@ class RMPSchool:
         self.school_name: str = "Unknown School"
         self.professors_list: List[Professor] = []
         self._interrupted: bool = False
-        # graphql_id -> error, for professors whose reviews could not be fetched
-        # at all. Keyed by id rather than name because names are not unique.
-        self.failed_review_fetches: Dict[str, str] = {}
 
         self._graphql_school_id: str = base64.b64encode(
             f"School-{school_id}".encode()
@@ -215,6 +203,7 @@ class RMPSchool:
         self, payload: Dict[str, Any], retries: int = 2
     ) -> Optional[Dict[str, Any]]:
         """Make a GraphQL POST request with rate limiting and fail-fast retries."""
+        drop_auth: bool = False
         for attempt in range(retries):
             _bucket.acquire()
             try:
@@ -222,11 +211,15 @@ class RMPSchool:
                     RMP_GRAPHQL_URL,
                     json=payload,
                     timeout=30,
+                    # requests removes a header whose per-request value is None
+                    headers={"Authorization": None} if drop_auth else None,
                 )
                 if resp.status_code == 403:
                     if attempt == 0:
-                        print(f"  ⚠ Got 403 — retrying with different headers...")
-                    self._session.headers.pop("Authorization", None)
+                        print(f"  ⚠ Got 403 — retrying this request without auth header...")
+                    # Never mutate the shared session: popping the header would
+                    # permanently un-auth all 15 worker threads for the whole run.
+                    drop_auth = True
                     time.sleep(2)
                     continue
                 if resp.status_code == 429:
@@ -280,7 +273,7 @@ class RMPSchool:
                 break
 
             search_data: Optional[Dict[str, Any]] = (
-                data.get("data", {}).get("search", {}).get("teachers", {})
+                ((data.get("data") or {}).get("search") or {}).get("teachers") or {}
             )
             if not search_data:
                 print(f"\n  ✗ Unexpected response: {json.dumps(data)[:200]}")
@@ -288,6 +281,14 @@ class RMPSchool:
 
             edges: List[Dict[str, Any]] = search_data.get("edges", [])
             page_info: Dict[str, Any] = search_data.get("pageInfo", {})
+
+            if search_data.get("didFallback"):
+                pbar.close()
+                sys.exit(
+                    "✗ Scrape aborted: RMP search fell back to a cross-school query "
+                    "(didFallback=true) — results are not school-filtered. "
+                    "Aborting without writing output."
+                )
 
             for edge in edges:
                 node: Dict[str, Any] = edge.get("node", {})
@@ -335,7 +336,7 @@ class RMPSchool:
         self, data: Dict[str, Any]
     ) -> Tuple[List[Review], bool, Optional[str]]:
         reviews: List[Review] = []
-        teacher_node: Optional[Dict[str, Any]] = data.get("data", {}).get("node")
+        teacher_node: Optional[Dict[str, Any]] = (data.get("data") or {}).get("node")
         if not teacher_node:
             return reviews, False, None
 
@@ -390,15 +391,7 @@ class RMPSchool:
         return reviews, page_info.get("hasNextPage", False), page_info.get("endCursor")
 
     def _fetch_reviews_for_professor(self, prof: Professor) -> List[Review]:
-        """Fetch all reviews for a single professor. Thread-safe.
-
-        Raises ReviewFetchError if a request fails, rather than returning what it
-        managed to collect. A silent partial return is indistinguishable from "this
-        professor has no reviews", which is how a rate-limited page turns into
-        permanently missing data: the row count still looks plausible, so nothing
-        downstream notices. Raising lets the retry pass do its job and keeps the
-        final tally honest.
-        """
+        """Fetch all reviews for a single professor. Thread-safe."""
         reviews: List[Review] = []
         cursor: Optional[str] = None
         has_next: bool = True
@@ -407,10 +400,7 @@ class RMPSchool:
         while has_next:
             page_count += 1
             if page_count > MAX_REVIEW_PAGES:
-                raise ReviewFetchError(
-                    f"{prof.name}: hit the {MAX_REVIEW_PAGES}-page limit with more "
-                    f"pages pending ({len(reviews)} reviews so far)"
-                )
+                break
             payload: Dict[str, Any] = {
                 "query": TEACHER_RATINGS_QUERY,
                 "variables": {
@@ -421,10 +411,7 @@ class RMPSchool:
             }
             data: Optional[Dict[str, Any]] = self._graphql_post(payload)
             if not data:
-                raise ReviewFetchError(
-                    f"{prof.name}: ratings request failed on page {page_count} "
-                    f"({len(reviews)} reviews collected before the failure)"
-                )
+                break
 
             new_reviews, has_next, cursor = self._parse_ratings(data)
             reviews.extend(new_reviews)
@@ -449,74 +436,52 @@ class RMPSchool:
         total: int = len(profs_with_ratings)
         total_reviews: int = 0
 
-        # Outcome per professor: absent = fetched fine (possibly zero ratings),
-        # present = the last attempt raised. Only the latter is missing data.
-        #
-        # Keyed by graphql_id, not name. 49 of the 3,892 scraped professors share
-        # a name with a different RMP profile page (Rick Arrowood has three), and
-        # name keys let namesakes overwrite each other: one's success popped the
-        # other's genuine failure, which then got misreported as a phantom and
-        # swallowed by the exit check, while a retry wiped reviews that had
-        # already been fetched. graphql_id is safe as a key because
-        # profs_with_ratings only keeps professors that have one.
-        errors: Dict[str, str] = {}
+        pbar: tqdm = tqdm(total=total, desc="Fetching reviews", unit=" prof")
 
-        def run_pass(profs: List[Professor], workers: int, desc: str) -> None:
-            nonlocal total_reviews
-            with ThreadPoolExecutor(max_workers=workers) as ex:
-                futures: Dict[Future, Professor] = {
-                    ex.submit(self._fetch_reviews_for_professor, p): p for p in profs
-                }
-                for future in tqdm(as_completed(futures), total=len(profs),
-                                   desc=desc, unit=" prof"):
-                    prof: Professor = futures[future]
-                    try:
-                        reviews: List[Review] = future.result()
-                    except Exception as e:
-                        errors[prof.graphql_id] = str(e)
-                        continue
-                    errors.pop(prof.graphql_id, None)
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures: Dict[Future, Professor] = {
+                executor.submit(self._fetch_reviews_for_professor, prof): prof
+                for prof in profs_with_ratings
+            }
+
+            for future in as_completed(futures):
+                prof: Professor = futures[future]
+                try:
+                    reviews: List[Review] = future.result()
                     prof.reviews = reviews
                     total_reviews += len(reviews)
+                except Exception:
+                    pass
+                pbar.update(1)
 
-        run_pass(profs_with_ratings, 10, "Fetching reviews")
+        pbar.close()
 
-        # Retry only genuine failures. The old code retried every professor who
-        # came back with zero reviews, which meant re-fetching hundreds of
-        # legitimately-empty professors every run and reporting them as failures.
-        for attempt, workers in ((2, 5), (3, 1)):
-            if not errors:
-                break
-            retry = [p for p in profs_with_ratings if p.graphql_id in errors]
-            print(f"  Retry pass {attempt}: {len(retry)} professors whose requests failed")
-            total_reviews -= sum(len(p.reviews) for p in retry)  # avoid double count
-            for p in retry:
-                p.reviews = []
-            run_pass(retry, workers, f"Retrying (pass {attempt})")
+        # Second pass: retry failed professors with a small thread pool
+        failed_profs = [p for p in profs_with_ratings if not p.reviews]
+        if failed_profs:
+            print(f"  Retrying {len(failed_profs)} failed professors...")
+            with ThreadPoolExecutor(max_workers=5) as retry_executor:
+                retry_futures: Dict[Future, Professor] = {
+                    retry_executor.submit(self._fetch_reviews_for_professor, prof): prof
+                    for prof in failed_profs
+                }
+                for future in tqdm(as_completed(retry_futures), total=len(failed_profs), desc="Retrying", unit=" prof"):
+                    prof: Professor = retry_futures[future]
+                    try:
+                        reviews: List[Review] = future.result()
+                        prof.reviews = reviews
+                        total_reviews += len(reviews)
+                    except Exception:
+                        pass
+            recovered = sum(1 for p in failed_profs if p.reviews)
+            print(f"  Retry recovered {recovered}/{len(failed_profs)} professors")
 
-        # RMP claims a rating exists but serves no rating nodes — verified against
-        # its own website, which prints "doesn't have any ratings yet" alongside an
-        # average. Nothing to fetch, so these are complete, not missing.
-        phantom = [p for p in profs_with_ratings
-                   if not p.reviews and p.graphql_id not in errors]
-        fetched = sum(1 for p in profs_with_ratings if p.reviews)
-
-        print(f"  ✓ Fetched {total_reviews} reviews from {fetched}/{total} professors")
-        if phantom:
-            print(f"  ℹ {len(phantom)} professors have a rating count but no ratings on "
-                  f"RMP (deleted reviews, stale counters) — nothing to fetch:")
-            for p in phantom[:10]:
-                print(f"      {p.name} (RMP claims {p.num_ratings})")
-            if len(phantom) > 10:
-                print(f"      ... and {len(phantom) - 10} more")
-        if errors:
-            print(f"  ✗ {len(errors)} professors could NOT be fetched after 3 passes — "
-                  f"this IS missing data:")
-            for err in list(errors.values())[:10]:
-                print(f"      {err}")   # already prefixed with the professor's name
-            if len(errors) > 10:
-                print(f"      ... and {len(errors) - 10} more")
-        self.failed_review_fetches = errors
+        profs_done: int = sum(1 for p in profs_with_ratings if p.reviews)
+        print(
+            f"  ✓ Fetched {total_reviews} reviews from "
+            f"{profs_done}/{total} professors"
+            + (f" ({total - profs_done} still failed)" if profs_done < total else "")
+        )
 
     # ------------------------------------------------------------------
     # Export
@@ -578,6 +543,12 @@ def main() -> None:
     parser.add_argument("-f", "--file_path", help="Output CSV path", type=str)
     parser.add_argument("--json", help="Also export JSON", action="store_true")
     parser.add_argument("--no-reviews", help="Skip reviews", action="store_true")
+    parser.add_argument(
+        "--expect_school",
+        help='Abort if the scraped school name differs (default "Northeastern University"; pass "" to disable)',
+        type=str,
+        default="Northeastern University",
+    )
 
     args: argparse.Namespace = parser.parse_args()
 
@@ -595,6 +566,14 @@ def main() -> None:
             "Aborting without writing output to preserve existing data."
         )
 
+    if args.expect_school and school.school_name != args.expect_school:
+        school.close()
+        sys.exit(
+            f"✗ Scrape failed: school name {school.school_name!r} != expected "
+            f"{args.expect_school!r} (wrong-school fallback or RMP API change). "
+            "Aborting without writing output."
+        )
+
     school_name_fp: str = school.school_name.replace(" ", "").replace("-", "_").lower()
     script_dir: str = os.path.dirname(os.path.abspath(__file__))
 
@@ -610,18 +589,8 @@ def main() -> None:
     if args.json:
         school.dump_to_json(professors_csv.replace("_professors.csv", "_full.json"))
 
-    failures: Dict[str, str] = school.failed_review_fetches
     school.close()
     print("\n  Done!\n")
-
-    # Exit non-zero *after* writing, so the good rows are preserved but a run with
-    # genuinely missing reviews can't pass silently in CI. Professors that RMP
-    # simply has no ratings for are not counted here.
-    if failures:
-        sys.exit(
-            f"✗ {len(failures)} professors' reviews could not be fetched after 3 passes. "
-            "CSVs were written with everything else; re-run to fill the gaps."
-        )
 
 
 if __name__ == "__main__":

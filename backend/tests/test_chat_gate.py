@@ -1,7 +1,5 @@
 import pytest
-from rag.chat_gate import gate
-
-MAX_QUERY_LEN = 500
+from rag.chat_gate import gate, MAX_QUERY_LEN
 
 
 class FakeAdapter:

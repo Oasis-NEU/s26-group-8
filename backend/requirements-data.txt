@@ -1,0 +1,8 @@
+# Data-pipeline deps only (weekly data-refresh workflow, scraper, precompute).
+# The Railway server installs requirements.txt and never imports these.
+pandas
+numpy
+tqdm
+requests
+psycopg2-binary
+python-dotenv

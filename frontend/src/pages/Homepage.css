@@ -426,17 +426,7 @@
   box-shadow: 0 2px 12px rgba(0,0,0,0.06);
   position: relative;
   transition: opacity 0.2s;
-}
-
-/* Reserve the skeleton's footprint only while loading, so the board does not
-   collapse and rebound during the fetch. It used to sit on .goat-leaderboard as
-   a flat 608px (header 48px + 10 rows x 56px), which was a no-op back when every
-   board returned exactly 10 — the rows already added up to that. Now that the
-   review floor is uniform, a college can honestly have fewer than 10 qualifying
-   professors (Professional Studies has 5), and a fixed height pads those boards
-   with a few hundred pixels of blank card. A short board should look short. */
-.goat-leaderboard:has(.goat-skeleton-row) {
-  min-height: 608px;
+  min-height: 608px; /* header (48px) + 10 rows (56px each) */
 }
 
 
@@ -496,102 +486,6 @@
   text-decoration: none;
 }
 
-/* position: relative so the mobile override below can hand the tooltip a
-   containing block that spans the section's content width instead of an 18px
-   button — see the @media (max-width: 768px) block. */
-.goat-title-row {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-/* The affordance has to read as "there is something to open here" while staying
-   quieter than a 900-weight heading it sits next to, which is what the outline
-   circle buys: it holds its own shape at 18px without needing the heading's
-   weight or size. `cursor: help` rather than `pointer` — nothing navigates.
-   Sized in px, not em, so it does not scale with .section-title down the
-   breakpoints and start rivalling it. */
-.goat-rank-help {
-  position: relative;
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: 1.5px solid #b0b0b0;
-  border-radius: 50%;
-  background: transparent;
-  font-family: inherit;
-  font-size: 0.68rem;
-  font-weight: 700;
-  line-height: 1;
-  /* #8a8a8a would be 3.1:1 here; the glyph is the only thing identifying the
-     control, so it takes the 4.5:1 text threshold rather than 3:1. */
-  color: #6b6b6b;
-  cursor: help;
-  transition: border-color 0.15s, color 0.15s;
-}
-
-.goat-rank-help:hover,
-.goat-rank-help:focus-visible {
-  border-color: #d6394c;
-  color: #d6394c;
-}
-
-/* visibility, not display, so opacity can transition — the panel is in the DOM
-   at all times because React holds no open/closed state for it, and a
-   display:none child cannot animate on :hover. visibility is also what keeps it
-   out of the tab order and off the pointer while closed. */
-.goat-rank-tooltip {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%) translateY(4px);
-  z-index: 100;
-  /* max-content first so the text sets the width, then capped: a tooltip that
-     stretches to a paragraph measure is harder to read than two short lines.
-     The vw term is what stops it leaving the viewport on a narrow screen. */
-  width: max-content;
-  max-width: min(42ch, calc(100vw - 32px));
-  padding: 10px 14px;
-  background: #fff;
-  border: 1px solid #e0e0e0;
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-  font-size: 0.82rem;
-  font-weight: 400;
-  line-height: 1.45;
-  color: #5c5c5c;
-  text-align: left;
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transition: opacity 0.15s, visibility 0.15s, transform 0.15s;
-}
-
-.goat-rank-tooltip::before {
-  content: '';
-  position: absolute;
-  top: -6px;
-  left: 50%;
-  transform: translateX(-50%) rotate(45deg);
-  width: 10px;
-  height: 10px;
-  background: #fff;
-  border-left: 1px solid #e0e0e0;
-  border-top: 1px solid #e0e0e0;
-}
-
-.goat-rank-help:hover .goat-rank-tooltip,
-.goat-rank-help:focus-visible .goat-rank-tooltip {
-  opacity: 1;
-  visibility: visible;
-  transform: translateX(-50%) translateY(0);
-}
-
 .goat-header-row {
   display: grid;
   grid-template-columns: 36px 1.6fr 2.2fr 1.4fr 0.7fr;
@@ -604,15 +498,7 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.8px;
-  /* Was #999, which is 2.5:1 on this background. */
-  color: #6b6b6b;
-}
-
-/* The two columns the order is actually computed from. Reinforcement only —
-   the note under the section title states the rule in words — but it stops the
-   Rating column from reading as the sole sort key. */
-.goat-header-row .goat-col-ranked {
-  color: #b8384a;
+  color: #999;
 }
 
 .goat-header-row > span {
@@ -761,11 +647,7 @@
   border: 1px solid #e0e0e0;
   border-radius: 10px;
   padding: 12px 16px;
-  /* 160px before the projected-RMP row, then 208px, which is the point where
-     "on the TRACE scale" plus a tabular value stops wrapping. 240px is for the
-     note underneath rather than the rows: at 208 it ran to six lines and the
-     panel read as mostly prose with some numbers on top. */
-  min-width: 240px;
+  min-width: 160px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
   animation: tooltipFadeIn 0.15s ease-out;
   pointer-events: auto;
@@ -808,42 +690,9 @@
   color: #333;
 }
 
-/* The projected RMP value: the same measurement as the row above in different
-   units, not a third source, so it reads as subordinate to RMP rather than as a
-   sibling of RMP and TRACE. Indentation and size carry that, deliberately not
-   colour — the label would have to go lighter than the #888 above it to look
-   subordinate, and #888 is already only 3.5:1 on white. So this goes *darker*
-   (#767676 clears 4.5:1) and leans on the 10px indent and the smaller size
-   instead. */
-.tooltip-row-sub {
-  padding: 0 0 3px 10px;
-  font-size: 0.76rem;
-}
-
-.tooltip-row-sub .tooltip-label {
-  color: #767676;
-  font-weight: 400;
-}
-
-.tooltip-row-sub .tooltip-value {
-  color: #666;
-  font-weight: 500;
-}
-
 .tooltip-blended {
   color: #d6394c;
   font-weight: 800;
-}
-
-.tooltip-note {
-  margin-top: 6px;
-  /* Tracks .goat-rating-tooltip's min-width rather than sitting under it: at
-     170px against a wider panel the note wrapped two words early and left a
-     ragged right edge no content reached. */
-  max-width: 232px;
-  font-size: 0.7rem;
-  line-height: 1.3;
-  color: #999;
 }
 
 .tooltip-divider {
@@ -1158,44 +1007,9 @@
   background: linear-gradient(to left, rgba(36,36,36,0.97) 20%, transparent);
 }
 
-
-/* #6b6b6b is 3.0:1 on #1a1a1a and the border disappears entirely, so both
-   lighten. The hover accent follows .goat-col-ranked to #e8697a for the same
-   reason it does there: #d6394c is 1.9:1 against a dark surface. */
-.dark .goat-rank-help {
-  border-color: #5a5a5a;
-  color: #a8a8a8;
-}
-
-.dark .goat-rank-help:hover,
-.dark .goat-rank-help:focus-visible {
-  border-color: #e8697a;
-  color: #e8697a;
-}
-
-.dark .goat-rank-tooltip {
-  background: #2a2a2a;
-  border-color: #444;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-  color: #c8c8c8;
-}
-
-.dark .goat-rank-tooltip::before {
-  background: #2a2a2a;
-  border-left-color: #444;
-  border-top-color: #444;
-}
-
 .dark .goat-header-row {
   background: #2a2a2a;
-  /* Was #777, which is 3.2:1 on #2a2a2a. */
-  color: #9a9a9a;
-}
-
-/* #b8384a drops to 1.9:1 on #2a2a2a, so the accent lightens rather than
-   carrying over. */
-.dark .goat-header-row .goat-col-ranked {
-  color: #e8697a;
+  color: #777;
 }
 
 .dark .goat-row {
@@ -1290,31 +1104,8 @@
   color: #e0e0e0;
 }
 
-/* .tooltip-blended is one class, so .dark .tooltip-value outranked it and the
-   Avg row lost its accent in dark mode — the one line the panel exists to
-   summarise read like the source rows above it. Same lightened accent
-   .goat-col-ranked uses, and for the same reason: #d6394c is 1.9:1 here. Must
-   stay after .dark .tooltip-value, which it ties with on specificity. */
-.dark .tooltip-blended {
-  color: #e8697a;
-}
-
-/* Same reasoning as the light rule: the indent carries the hierarchy, so these
-   stay legible rather than dropping below the label above them. */
-.dark .tooltip-row-sub .tooltip-label {
-  color: #9a9a9a;
-}
-
-.dark .tooltip-row-sub .tooltip-value {
-  color: #bdbdbd;
-}
-
 .dark .tooltip-divider {
   background: #444;
-}
-
-.dark .tooltip-note {
-  color: #8a8a8a;
 }
 
 /* ==============================
@@ -1435,14 +1226,9 @@
     font-size: 0.82rem;
   }
 
-  /* Tooltip nudge: keep it on-screen. The min-width that used to sit here (140px,
-     then 200px) is deliberately gone rather than raised again. It predated the
-     projected-RMP row and re-narrowed the panel below the width its own label
-     needs, so the base rule governs at every size now. Staying on-screen is the
-     left/right anchoring below, which is what actually does that job; the
-     leaderboard rows are 620px wide inside a horizontal scroller here, so this
-     panel is not fighting the viewport the way the ranking note is. */
+  /* Tooltip nudge — keep it on-screen */
   .goat-rating-tooltip {
+    min-width: 140px;
     padding: 10px 14px;
     left: auto;
     right: 0;
@@ -1453,39 +1239,6 @@
     left: auto;
     right: 20px;
     transform: rotate(45deg);
-  }
-
-  /* Centring the ranking tooltip on the "?" cannot be kept here. The icon sits
-     wherever the heading's text ends — around x=225 on a 320px screen — so a
-     centred panel wide enough to hold two sentences runs off the right edge,
-     and right-anchoring it to the icon runs off the left instead. There is no
-     fixed offset that survives both, because the overflow direction depends on
-     the title's rendered width.
-     So the anchor moves off the icon: position: static drops the button out of
-     the containing-block chain, .goat-title-row (position: relative) takes over,
-     and the panel grows rightward from the section's content edge, capped at the
-     content width. Both edges are then inside the padding by construction.
-     The arrow goes with it — it can no longer point at the icon, and an arrow
-     aimed at the middle of a heading is worse than none. */
-  .goat-rank-help {
-    position: static;
-  }
-
-  .goat-rank-tooltip {
-    top: calc(100% + 8px);
-    left: 0;
-    right: auto;
-    max-width: calc(100vw - 32px); /* .section padding is 16px at this breakpoint */
-    transform: translateY(4px);
-  }
-
-  .goat-rank-help:hover .goat-rank-tooltip,
-  .goat-rank-help:focus-visible .goat-rank-tooltip {
-    transform: translateY(0);
-  }
-
-  .goat-rank-tooltip::before {
-    display: none;
   }
 }
 
@@ -1612,8 +1365,9 @@
     font-size: 0.8rem;
   }
 
-  /* Tooltip: anchor to left edge on tiny screens. No min-width, as above. */
+  /* Tooltip: anchor to left edge on tiny screens */
   .goat-rating-tooltip {
+    min-width: 130px;
     padding: 10px 12px;
     left: 0;
     right: auto;

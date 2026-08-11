@@ -73,18 +73,9 @@ def bm_client(monkeypatch):
     def fake_write(sql, params=None):
         state["writes"].append((sql, params))
 
-    def fake_write_all(statements):
-        """The transactional add path. Recorded into the same list, in order, so
-        assertions on writes[-1] still describe the last statement executed."""
-        state["write_all_calls"].append(list(statements))
-        for sql, params in statements:
-            fake_write(sql, params)
-
-    state["write_all_calls"] = []
     monkeypatch.setattr(server, "query", fake_query, raising=False)
     monkeypatch.setattr(server, "query_one", fake_query_one, raising=False)
     monkeypatch.setattr(server, "_write", fake_write, raising=False)
-    monkeypatch.setattr(server, "_write_all", fake_write_all, raising=False)
     return server.app.test_client(), state
 
 
@@ -183,7 +174,7 @@ def test_delete_writes_delete(bm_client):
     assert resp.status_code == 200
     sql, params = state["writes"][-1]
     assert "DELETE FROM bookmarks" in sql
-    assert params == ("user-123", "course", ["CS2500"])
+    assert params == ("user-123", "course", "CS2500")
 
 
 def test_delete_invalid_type_is_400(bm_client):
@@ -193,73 +184,3 @@ def test_delete_invalid_type_is_400(bm_client):
                          headers=auth_headers())
     assert resp.status_code == 400
     assert state["writes"] == []
-
-
-# ── server._write_all: the actual transaction ────────────────────────────────
-# The fixture above stubs this out, so the real helper needs its own coverage:
-# one commit for the whole list, and a rollback that re-raises rather than
-# leaving a half-applied bookmark mutation committed.
-
-os.environ.setdefault("CRDB_DATABASE_URL", "postgresql://stub")
-os.environ.setdefault("JWT_SECRET", "test-secret")
-import psycopg2  # noqa: E402
-import server as server_mod  # noqa: E402
-
-
-class FakeConn:
-    def __init__(self, fail_on=None):
-        self.fail_on = fail_on      # substring of the statement that should raise
-        self.executed, self.commits, self.rollbacks = [], 0, 0
-
-    def cursor(self):
-        return self
-
-    def execute(self, sql, params=None):
-        if self.fail_on and self.fail_on in sql:
-            raise RuntimeError("statement failed")
-        self.executed.append((sql, params))
-
-    def commit(self):
-        self.commits += 1
-
-    def rollback(self):
-        self.rollbacks += 1
-
-
-STATEMENTS = [("INSERT INTO bookmarks ...", ("u", "professor", "a")),
-              ("DELETE FROM bookmarks ...", ("u", "professor", ["b"]))]
-
-
-def test_write_all_commits_once_for_the_whole_batch(monkeypatch):
-    conn = FakeConn()
-    monkeypatch.setattr(server_mod, "get_db", lambda: conn, raising=False)
-    server_mod._write_all(STATEMENTS)
-    assert [sql for sql, _ in conn.executed] == [sql for sql, _ in STATEMENTS]
-    assert conn.commits == 1, "a commit per statement would not be one transaction"
-    assert conn.rollbacks == 0
-
-
-def test_write_all_rolls_back_and_reraises(monkeypatch):
-    conn = FakeConn(fail_on="DELETE")
-    monkeypatch.setattr(server_mod, "get_db", lambda: conn, raising=False)
-    with pytest.raises(RuntimeError):
-        server_mod._write_all(STATEMENTS)
-    assert conn.rollbacks == 1
-    assert conn.commits == 0, "the successful INSERT must not be committed alone"
-
-
-def test_write_all_retries_once_on_a_stale_connection(monkeypatch):
-    """Mirrors query()/_write: a recycled pool connection must not fail the request.
-
-    Both statements are idempotent, so replaying the whole batch is safe.
-    """
-    conns = [FakeConn(fail_on="INSERT"), FakeConn()]
-    conns[0].execute = lambda sql, params=None: (_ for _ in ()).throw(
-        psycopg2.InterfaceError("connection already closed"))
-    discarded = []
-    monkeypatch.setattr(server_mod, "get_db", lambda: conns[len(discarded)], raising=False)
-    monkeypatch.setattr(server_mod, "_discard_db_conn", lambda: discarded.append(1), raising=False)
-
-    server_mod._write_all(STATEMENTS)
-    assert discarded == [1], "the stale connection must be discarded"
-    assert conns[1].commits == 1

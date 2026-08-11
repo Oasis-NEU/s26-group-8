@@ -4,22 +4,44 @@ on:
   schedule:
     - cron: "0 10 * * 0"  # 10:00 UTC every Sunday
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Scrape + sanity checks only — skip DB writes and the data-store push"
+        type: boolean
+        default: true
+      accept_lower_counts:
+        description: "Skip the relative (vs last week) floors; absolute floors still apply"
+        type: boolean
+        default: false
+      full_replace:
+        description: "Full-replace rmp_professors/rmp_reviews instead of upserting"
+        type: boolean
+        default: false
+
+# ci.yml sets all three of these; the job that writes prod gets them too.
+permissions:
+  contents: read
+
+concurrency:
+  group: data-refresh
+  cancel-in-progress: false  # queue a manual dispatch behind the cron, never kill a mid-write run
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.11"  # match ci.yml — prod writes run the tested interpreter
           cache: pip
           cache-dependency-path: backend/requirements*.txt
 
       - name: Install dependencies
         working-directory: backend
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-data.txt
 
       # Pull the CSV data store (TRACE data, photos, previous RMP data) into
       # output_data. precompute.py reads all six CSVs from here; the RMP scrape
@@ -32,20 +54,48 @@ jobs:
             "https://x-access-token:${RMH_DATA_TOKEN}@github.com/RayanR000/RateMyHusky-data.git" \
             backend/Better_Scraper/output_data
 
+      # Snapshot last week's row counts BEFORE the scrape overwrites the CSVs.
+      # The sanity check compares the fresh scrape against these; a missing file
+      # (first run / rebuilt store) leaves the count at 0, which skips the
+      # relative check and falls back to the absolute floors.
+      - name: Record previous data-store counts
+        working-directory: backend
+        run: |
+          data_dir="Better_Scraper/output_data"
+          old_profs=0
+          old_reviews=0
+          if [ -f "$data_dir/rmp_professors.csv" ]; then
+            old_profs=$(python -c "import pandas as pd; print(len(pd.read_csv('$data_dir/rmp_professors.csv')))")
+          fi
+          if [ -f "$data_dir/rmp_reviews.csv" ]; then
+            old_reviews=$(python -c "import pandas as pd; print(len(pd.read_csv('$data_dir/rmp_reviews.csv')))")
+          fi
+          echo "OLD_PROFS=$old_profs" >> "$GITHUB_ENV"
+          echo "OLD_REVIEWS=$old_reviews" >> "$GITHUB_ENV"
+          echo "Previous store: $old_profs professors, $old_reviews reviews"
+
+      # If RMP starts 403/429-ing the runner's datacenter IP, enable the token
+      # bucket without a code change — uncomment the two lines below.
       - name: RMP scrape
         working-directory: backend
+        # env:
+        #   RMP_RATE_LIMIT_RPS: "5"
         run: |
           python Better_Scraper/fetch_lite.py \
             -s 696 \
             --file_path Better_Scraper/output_data/rmp_professors.csv
 
-      # Guardrail: a broken/rate-limited scrape returns near-empty results.
-      # Abort before touching the DB or the data store so good data survives.
-      # Floors are ~70-80% of the normal haul (≈3,889 profs / ≈44.5k reviews);
-      # the professor floor sits above a lost 1,000-row search page, and both
-      # phases are checked since reviews can fail while professors succeed.
+      # Guardrail: a broken/rate-limited scrape must not overwrite good data.
+      # Two layers, both checked before any DB or data-store write:
+      #   - absolute floors (~70-80% of the normal ≈3,889 profs / ≈44.5k reviews)
+      #     catch catastrophic failures and cover the first run,
+      #   - relative floors (>= 95% of last week's store) catch degraded scrapes
+      #     that would otherwise slide past, e.g. 3,100 profs beating the 3,000
+      #     floor and then force-pushing over the only copy of good data.
       - name: Sanity check scrape
         working-directory: backend
+        env:
+          ACCEPT_LOWER: ${{ inputs.accept_lower_counts }}
         run: |
           # precompute.py reads all six CSVs; a missing TRACE/photo file crashes
           # it mid-run. Fail loud here before touching the DB. trace_comments may
@@ -63,7 +113,7 @@ jobs:
           fi
           profs=$(python -c "import pandas as pd; print(len(pd.read_csv('$data_dir/rmp_professors.csv')))")
           reviews=$(python -c "import pandas as pd; print(len(pd.read_csv('$data_dir/rmp_reviews.csv')))")
-          echo "Scraped $profs professors, $reviews reviews"
+          echo "Scraped $profs professors, $reviews reviews (previous week: $OLD_PROFS / $OLD_REVIEWS)"
           if [ "$profs" -lt 3000 ]; then
             echo "::error::Only $profs professors scraped (< 3000 floor). Aborting to protect existing data."
             exit 1
@@ -72,30 +122,82 @@ jobs:
             echo "::error::Only $reviews reviews scraped (< 30000 floor). Aborting to protect existing data."
             exit 1
           fi
+          if [ "$ACCEPT_LOWER" = "true" ]; then
+            echo "accept_lower_counts set — skipping relative floors."
+          else
+            if [ "$OLD_PROFS" -gt 0 ] && [ "$profs" -lt $(( OLD_PROFS * 95 / 100 )) ]; then
+              echo "::error::$profs professors < 95% of last week's $OLD_PROFS. Aborting; re-run with accept_lower_counts if the drop is real."
+              exit 1
+            fi
+            if [ "$OLD_REVIEWS" -gt 0 ] && [ "$reviews" -lt $(( OLD_REVIEWS * 95 / 100 )) ]; then
+              echo "::error::$reviews reviews < 95% of last week's $OLD_REVIEWS. Aborting; re-run with accept_lower_counts if the drop is real."
+              exit 1
+            fi
+          fi
 
       # Upsert the freshly scraped RMP rows into the raw DB tables so new
       # review text / new professors reach the site. Idempotent — skips rows
-      # already present, so weekly writes are just the delta.
+      # already present, so weekly writes are just the delta. Upserts never
+      # delete or update, so RMP-side deletions/edits drift: on the first
+      # Sunday of each month (or on the full_replace input) the RMP tables
+      # are truncated and fully reloaded from the fresh CSVs instead.
       - name: Load fresh RMP rows into CockroachDB
+        if: ${{ !inputs.dry_run }}
         working-directory: backend
         env:
           CRDB_DATABASE_URL: ${{ secrets.CRDB_DATABASE_URL }}
-        run: python migrate_to_crdb.py rmp_professors rmp_reviews
+          FULL_REPLACE: ${{ inputs.full_replace }}
+        run: |
+          replace_flag=""
+          if [ "$FULL_REPLACE" = "true" ] || { [ "${{ github.event_name }}" = "schedule" ] && [ "$(date -u +%-d)" -le 7 ]; }; then
+            replace_flag="--replace"
+            echo "Full-replace mode: truncating and reloading rmp_professors/rmp_reviews"
+          fi
+          python migrate_to_crdb.py rmp_professors rmp_reviews $replace_flag
 
       # RMP-only refresh: TRACE data is unchanged this run, so skip the heavy
       # TRACE table maintenance (REFRESH_TRACE=false). Run a full precompute
       # (REFRESH_TRACE unset/true) after a manual TRACE re-scrape.
       - name: Precompute & write to CockroachDB
+        if: ${{ !inputs.dry_run }}
         working-directory: backend
         env:
           CRDB_DATABASE_URL: ${{ secrets.CRDB_DATABASE_URL }}
           REFRESH_TRACE: "false"
         run: python precompute.py
 
+      # Post-write verification: the pre-scrape floors validate the input CSVs;
+      # this validates what actually landed in the DB. Runs BEFORE the store
+      # push so a bad DB state also blocks overwriting the data store.
+      - name: Verify DB state after write
+        if: ${{ !inputs.dry_run }}
+        working-directory: backend
+        env:
+          CRDB_DATABASE_URL: ${{ secrets.CRDB_DATABASE_URL }}
+        run: |
+          python - <<'EOF'
+          import os, sys, psycopg2
+          conn = psycopg2.connect(os.environ["CRDB_DATABASE_URL"], sslmode="require")
+          cur = conn.cursor()
+          cur.execute("SELECT count(*) FROM professors_catalog")
+          n = cur.fetchone()[0]
+          print(f"professors_catalog: {n} rows")
+          if n < 3000:
+              print(f"::error::professors_catalog has only {n} rows after precompute (< 3000). Store push skipped; investigate before re-running.")
+              sys.exit(1)
+          cur.execute("SELECT count(*) FROM (SELECT 1 FROM rmp_reviews WHERE name_key IS NULL LIMIT 1001) AS probe")
+          nulls = cur.fetchone()[0]
+          if nulls:
+              shown = "1000+" if nulls > 1000 else nulls
+              print(f"::warning::rmp_reviews has {shown} NULL name_key rows after precompute.")
+          conn.close()
+          EOF
+
       # Commit the refreshed CSVs back as a single squashed commit (orphan
       # branch) so the data store stays a flat snapshot rather than growing
       # history on every weekly run.
       - name: Push refreshed data back to store
+        if: ${{ !inputs.dry_run }}
         working-directory: backend/Better_Scraper/output_data
         env:
           RMH_DATA_TOKEN: ${{ secrets.RMH_DATA_TOKEN }}
