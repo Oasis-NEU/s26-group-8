@@ -484,10 +484,17 @@ const [showCourseTip, setShowCourseTip] = useState(() => localStorage.getItem('p
     }
   }, [allCourseCodes]);
 
-  const filteredRmpReviews = useMemo(() => {
-    const filtered = reviews.filter(r => selectedCourses.has(getFormattedCourseCode(r.course).toUpperCase()));
-    return deduplicateByText(filtered, r => r.comment);
-  }, [reviews, selectedCourses, getFormattedCourseCode]);
+  /* Every stored RMP rating for the selected courses. Counts and the rating
+     distribution read this, not the deduplicated list below: the text dedupe is
+     a display rule for the review cards, and using it as a count made the stat
+     cards disagree with the leaderboard, which counts rating rows. */
+  const rmpRatingsInSelection = useMemo(
+    () => reviews.filter(r => selectedCourses.has(getFormattedCourseCode(r.course).toUpperCase())),
+    [reviews, selectedCourses, getFormattedCourseCode]);
+
+  const filteredRmpReviews = useMemo(
+    () => deduplicateByText(rmpRatingsInSelection, r => r.comment),
+    [rmpRatingsInSelection]);
 
   const filteredTraceCourses = useMemo(() => {
     return (profile?.traceCourses || []).filter(c => {
@@ -535,26 +542,31 @@ const [showCourseTip, setShowCourseTip] = useState(() => localStorage.getItem('p
     }
 
     if (allSelected) {
-      const traceCompleted = profile.traceRatingCounts
-        ? Object.values(profile.traceRatingCounts).reduce((sum, rc) => sum + (rc.completed || 0), 0)
-        : 0;
       return {
         avgRating: profile.avgRating,
         rmpRating: profile.rmpRating,
         traceRating: profile.traceRating,
         difficulty: profile.difficulty ?? 0,
-        totalRatings: filteredRmpReviews.length + traceCompleted,
+        /* The catalog's own count — the same field the GOATED board's "Ratings"
+           column serves, so the two pages agree by construction instead of by
+           two hand-rolled sums happening to land on the same number. They
+           didn't: this used to add up survey submitters where the board added up
+           an arbitrary question row, and neither matched the distribution below. */
+        totalRatings: profile.totalRatings,
         wouldTakeAgainPct: profile.wouldTakeAgainPct,
         hoursPerWeek: profile.hoursPerWeek,
       };
     }
 
-    // Course-filtered: use RMP data for rating/difficulty; fall back to profile-level for TRACE values
-    const rmpRating = filteredRmpReviews.length > 0
-      ? filteredRmpReviews.reduce((acc, r) => acc + r.quality, 0) / filteredRmpReviews.length
+    // Course-filtered: use RMP data for rating/difficulty; fall back to profile-level for TRACE values.
+    // Averaged over every rating in the selection, the same rows the count below
+    // reports — a mean over the text-deduplicated subset would be a mean of one
+    // population beside the size of another.
+    const rmpRating = rmpRatingsInSelection.length > 0
+      ? rmpRatingsInSelection.reduce((acc, r) => acc + r.quality, 0) / rmpRatingsInSelection.length
       : null;
-    const rmpDifficulty = filteredRmpReviews.length > 0
-      ? filteredRmpReviews.reduce((acc, r) => acc + r.difficulty, 0) / filteredRmpReviews.length
+    const rmpDifficulty = rmpRatingsInSelection.length > 0
+      ? rmpRatingsInSelection.reduce((acc, r) => acc + r.difficulty, 0) / rmpRatingsInSelection.length
       : null;
 
     const traceRating = profile.traceRating;
@@ -597,13 +609,18 @@ const [showCourseTip, setShowCourseTip] = useState(() => localStorage.getItem('p
       rmpRating,
       traceRating,
       difficulty,
-      totalRatings: filteredRmpReviews.length + (profile.traceRatingCounts
-        ? Array.from(selectedCourses).reduce((sum, code) => sum + (profile.traceRatingCounts![code]?.completed || 0), 0)
+      /* Same definition as profile.totalRatings, restricted to the selection:
+         RMP rating rows plus responses to TRACE's overall question. */
+      totalRatings: rmpRatingsInSelection.length + (profile.traceRatingCounts
+        ? Array.from(selectedCourses).reduce((sum, code) => {
+            const rc = profile.traceRatingCounts![code];
+            return rc ? sum + rc.count1 + rc.count2 + rc.count3 + rc.count4 + rc.count5 : sum;
+          }, 0)
         : 0),
       wouldTakeAgainPct: profile.wouldTakeAgainPct,
       hoursPerWeek: filteredHoursPerWeek,
     };
-  }, [profile, filteredRmpReviews, filteredTraceCourses, allCourseCodes, selectedCourses]);
+  }, [profile, rmpRatingsInSelection, filteredTraceCourses, allCourseCodes, selectedCourses]);
 
   const ratingDistribution = useMemo(() => {
     const counts = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
@@ -612,8 +629,8 @@ const [showCourseTip, setShowCourseTip] = useState(() => localStorage.getItem('p
       return [5, 4, 3, 2, 1].map(star => ({ star, count: 0 }));
     }
 
-    // RMP
-    filteredRmpReviews.forEach(r => {
+    // RMP — every rating, so the bars add up to the Total Ratings card above
+    rmpRatingsInSelection.forEach(r => {
       if (r.quality >= 1 && r.quality <= 5) {
         const q = Math.round(r.quality) as 1 | 2 | 3 | 4 | 5;
         counts[q]++;
@@ -638,7 +655,7 @@ const [showCourseTip, setShowCourseTip] = useState(() => localStorage.getItem('p
       star,
       count: counts[star as 1 | 2 | 3 | 4 | 5],
     }));
-  }, [filteredRmpReviews, selectedCourses, profile?.traceRatingCounts]);
+  }, [rmpRatingsInSelection, selectedCourses, profile?.traceRatingCounts]);
 
   const maxCount = useMemo(() => Math.max(...ratingDistribution.map(d => d.count), 1), [ratingDistribution]);
 

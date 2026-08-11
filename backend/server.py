@@ -33,7 +33,10 @@ from rag.chat_gate import gate
 from rag.chat_retrieve import retrieve, fetch_reddit_mentions
 from rag.query_embedder import embed_query
 from rag.chat_answer import generate, generate_course_list, generate_course_ranking
-from professor_full import build_full
+from professor_full import build_full, trace_key
+from rating_scale import (
+    CALIBRATION_MIN_RMP, CALIBRATION_MIN_TRACE, FALLBACK_CALIBRATION,
+    fit_rma, project_rmp)
 import bookmarks
 import usage_alert
 
@@ -555,59 +558,241 @@ def colleges():
     return jsonify(result)
 
 
-NO_MIN_COLLEGES = {"Law", "Professional Studies"}
+# ── Leaderboard ranking ──────────────────────────────────────────────
+# Ranking by raw avg_rating lets a 5.00 built on 3 reviews outrank a 4.9 built on
+# 500. 276 professors sit at exactly 5.00 and 95% of them have under 15 reviews,
+# which is why the Law and Professional Studies boards (which used to carry a
+# review floor of 5 rather than 100) filled up with them.
+#
+# So rank on a Bayesian posterior mean instead — the IMDb Top 250 formula —
+# blending each professor toward the global mean with a prior worth SHRINKAGE_M
+# reviews:   (n*R + m*C) / (n + m)
+#
+# A professor with 3 reviews is dragged to C; one with 500 barely moves. m=50 is
+# small enough that the correlation between score and review count only rises to
+# ~0.26 (it saturates around 0.30, so a larger m buys nothing but distortion).
+# C is read from the data rather than hardcoded so it tracks re-scrapes.
+#
+# This is the *sort key only* — the displayed number stays avg_rating. Shrinkage
+# is mathematically a contraction, so it cannot spread the top of the board; the
+# clustering near 4.9 is a real property of the ratings, not something a formula
+# should paper over.
+SHRINKAGE_M = 50
+
+# What C is measured over. It was avg(avg_rating) across the entire catalog,
+# which is mostly professors carrying a handful of responses: their ratings are
+# sampling noise, so averaging them describes the noise rather than the
+# professors, and the prior the whole board shrinks toward came out of it.
+#
+# The prior of a ranking should be the mean of the quantity being ranked, so it
+# is measured over professors whose rating is actually pinned down. At 30
+# responses the standard error of a TRACE mean is ~0.13; at 5 it is ~0.33, which
+# is wider than the entire top of the board.
+#
+# Deliberately global rather than per-college: a per-college prior ranks each
+# professor against their own college, which is department-relative ranking under
+# another name. That was built once and rejected — this board is a class-picking
+# tool, not a per-department award.
+RANKING_PRIOR_MIN_REVIEWS = 30
+FALLBACK_PRIOR = 4.2   # only for an empty or brand-new catalog
+
+# The board's evidence floor, and deliberately the same 30 as the prior's: a
+# threshold for "well enough measured to be ranked" cannot sensibly be looser
+# than the one for "well enough measured to inform the prior". The standard-error
+# argument above is the whole reason for both.
+#
+# It replaced a floor of 100 with a per-college exception dropping Law and
+# Professional Studies to 5. Both halves of that were wrong in opposite
+# directions, and shrinkage is what makes a single number workable:
+#
+#   - 100 was doing almost no work. Reaching Khoury's rank-10 score needs ~57
+#     reviews even at a perfect 5.00, so the shrunk score already excludes
+#     nearly everyone the floor was excluding. Re-measured after the
+#     total_reviews rebuild, going 100 -> 30 changes one row across every
+#     100-floor board: Business rank 10, Peggy O'Kelly -> Laura Huang. (Before
+#     the rebuild it changed nothing at all, so expect this to keep drifting
+#     with the corpus — the argument is that the floor is near-redundant, not
+#     that it is exactly redundant.)
+#   - 5 was the actual bug. Law survives it on population (232 eligible), but
+#     Professional Studies had 15, so a "top 10" showed two thirds of the
+#     department including professors with 7 ratings, scoring within 0.04 of each
+#     other and of the prior — an ordering that reflects the prior, not the
+#     professors. At 30 that board is 5 professors long, which is the honest
+#     answer: the department does not have ten well-measured ones.
+#
+# So a short board is a feature. Do not backfill it to reach `limit`.
+BOARD_MIN_REVIEWS = 30
+
+# CockroachDB has no implicit int/float coercion, so total_reviews (INT) needs an
+# explicit cast against avg_rating (FLOAT) or the query fails with
+# "unsupported binary operator: <int> * <float>".
+# float(m), not "{m}.0" — the latter renders "0.9.0" and is a syntax error if
+# SHRINKAGE_M is ever tuned to a non-integer.
+# The prior arrives as a bound parameter rather than a subquery, so the sort does
+# not carry a full-table aggregate and the value can be measured under its own
+# filter.
+# The prior is cast explicitly: CockroachDB infers placeholder types from
+# context, and a bare %s inside an ORDER BY arithmetic expression is the kind of
+# position where it gives up with "could not determine data type of placeholder".
+RANKING_SCORE_SQL = """
+    ((total_reviews::float * avg_rating + {m} * %s::float)
+     / (total_reviews::float + {m}))
+""".format(m=float(SHRINKAGE_M))
+
+
+def ranking_prior(query_one):
+    """Mean rating of professors well-enough measured to have one.
+
+    Falls back to a constant only when nothing clears the floor, which means an
+    empty catalog — ranking on None would order the whole board by review count.
+    """
+    row = query_one("""
+        SELECT avg(avg_rating) AS prior FROM professors_catalog
+        WHERE avg_rating IS NOT NULL AND total_reviews >= %s
+    """, (RANKING_PRIOR_MIN_REVIEWS,))
+    prior = row.get("prior") if row else None
+    return float(prior) if prior is not None else FALLBACK_PRIOR
+
+
+def shrunk_score(avg_rating, total_reviews, prior_mean, m=SHRINKAGE_M):
+    """Python mirror of RANKING_SCORE_SQL (for tests and any Python-side ranking)."""
+    if avg_rating is None:
+        return None
+    n = total_reviews or 0
+    return (n * avg_rating + m * prior_mean) / (n + m)
+
+
+# ── The RMP -> TRACE scale, for display ──────────────────────────────────────
+# avg_rating pools RMP with TRACE only after projecting RMP onto TRACE's scale,
+# because the two do not measure the same way: RMP runs ~0.8 lower and 2.4x
+# wider. That projection happened invisibly, and the board's rating tooltip
+# listed raw RMP, raw TRACE and the pooled Avg as though all three were
+# comparable. They were not, so the arithmetic could not be made to work:
+#
+#   Alec Stubbs      RMP 5.00   TRACE 5.00   Avg 4.99   (5.00 projects to 4.96)
+#   John Rachlin     RMP 4.63   TRACE 4.74   Avg 4.75   (above both shown)
+#
+# and on 32 of the 55 two-source rows across the ten boards the Avg landed
+# exactly on TRACE while RMP differed, so RMP read as thrown away.
+#
+# The fix is to serve the projected value too. Fitting it here rather than
+# reading a stored column is what keeps this off the critical path of a
+# precompute run: measure_calibration fits on `rating` and `trace_overall`
+# filtered by num_ratings and trace_reviews, and professors_catalog stores all
+# four, so the same fit is available at request time.
+#
+# What this deliberately does NOT try to do is let a reader recompute the Avg.
+# The pooling weights are inverse-variance, not the rating counts — one RMP
+# rating carries ~1.88x the weight of one TRACE response (slope^2 * var_trace /
+# var_rmp) — and the per-response variances are measured from raw review rows
+# that the catalog does not carry. Showing the counts as if they were the weights
+# would replace one unreproducible sum with another. What the projected value
+# does buy is that the Avg always lies between the two numbers displayed above
+# it: true for all 1,708 two-source professors in the catalog, and inherent to
+# pooling, which cannot leave the interval its inputs span.
+def rating_calibration(query_fn):
+    """Refit the RMP->TRACE mapping from the catalog. Never returns None.
+
+    Not separately cached, for the same reason ranking_prior is not: the only
+    caller is behind a cached payload, so this runs on a cache miss rather than
+    per request, and a stale fit served beside fresh ratings would be its own
+    small version of the bug above.
+    """
+    rows = query_fn("""
+        SELECT rmp_rating, trace_rating FROM professors_catalog
+        WHERE rmp_rating IS NOT NULL AND trace_rating IS NOT NULL
+          AND num_ratings >= %s AND trace_reviews >= %s
+    """, (CALIBRATION_MIN_RMP, CALIBRATION_MIN_TRACE))
+    pairs = [(r["trace_rating"], r["rmp_rating"]) for r in rows
+             if r["rmp_rating"] is not None and r["trace_rating"] is not None]
+    if not pairs:
+        return FALLBACK_CALIBRATION
+    fit = fit_rma([t for t, _ in pairs], [r for _, r in pairs])
+    return FALLBACK_CALIBRATION if fit is None else fit
 
 
 @app.route("/api/goat-professors")
 def goat_professors():
     college = request.args.get("college", "Khoury")
     limit = min(int(request.args.get("limit", "10")), 50)
-    min_reviews = int(request.args.get("min_reviews", "100"))
+    min_reviews = int(request.args.get("min_reviews", str(BOARD_MIN_REVIEWS)))
 
-    cache_key = f"goat:{college}:{limit}:{min_reviews}"
+    # v5: the ordering has changed three times — to the shrunk score, again when
+    # the prior stopped being the whole-catalog average, and again when the
+    # per-college review floor collapsed to a single BOARD_MIN_REVIEWS and the
+    # sort gained a name tiebreak — and the payload once, on rmpAdjusted. An
+    # unbumped key serves the previous version from the cache after deploy, which
+    # looks exactly like the fix not working: here, a tooltip whose numbers still
+    # do not add up, on rows that happen to be cached.
+    cache_key = f"goat:v5:{college}:{limit}:{min_reviews}"
     cached = cache_get(cache_key)
     if cached:
         return jsonify(cached)
 
-    if college in NO_MIN_COLLEGES:
-        rows = query("""
-            SELECT * FROM professors_catalog
-            WHERE college = %s AND total_reviews >= 5
-            ORDER BY avg_rating DESC NULLS LAST, total_reviews DESC
-            LIMIT %s
-        """, (college, limit))
-    else:
-        rows = query("""
-            SELECT * FROM professors_catalog
-            WHERE college = %s AND total_reviews >= %s
-            ORDER BY avg_rating DESC NULLS LAST, total_reviews DESC
-            LIMIT %s
-        """, (college, min_reviews, limit))
+    prior = ranking_prior(query_one)
+    # `name` breaks ties last. Without it, professors equal on both score and
+    # review count come back in whatever order the scan produces, so the board
+    # could reshuffle between requests. Measured after the total_reviews rebuild:
+    # 59 such groups across the catalog covering 127 professors, none in Law
+    # (the new counts broke every tie it used to have) and none reaching a top
+    # 10. So this closes the door rather than fixing a visible bug — but don't
+    # read the "none in a top 10" part as permanent: tie groups move whenever
+    # total_reviews is recomputed, which is exactly what happened to Law's.
+    rows = query(f"""
+        SELECT * FROM professors_catalog
+        WHERE college = %s AND total_reviews >= %s
+        ORDER BY {RANKING_SCORE_SQL} DESC NULLS LAST, total_reviews DESC, name
+        LIMIT %s
+    """, (college, min_reviews, prior, limit))
 
-    # Batch-count RMP + TRACE comments
+    # Batch-count RMP + TRACE comments.
+    #
+    # The two sides are keyed differently: RMP comments live under the professor's
+    # RMP name_key, TRACE comments under trace_key(row), and those differ for
+    # fuzzy-matched professors. They used to be summed in one UNION ALL keyed on
+    # name_key alone, which silently returned zero TRACE comments for exactly the
+    # professors whose profile page resolves them correctly.
+    #
+    # So each side is counted under its own key and the two are added per row.
+    # Summing in SQL instead would mean carrying the trace_name_key -> name_key
+    # mapping into the query, which is more machinery than one extra round trip on
+    # a cached endpoint that reads at most 50 rows.
     comment_counts = {}
     if rows:
         name_keys = [row["name_key"] for row in rows]
-        placeholders = ",".join(["%s"] * len(name_keys))
-        combined_counts = query(
-            f"SELECT name_key, SUM(cnt) as cnt FROM ("
-            f"  SELECT name_key, COUNT(*) as cnt FROM rmp_reviews "
-            f"  WHERE name_key IN ({placeholders}) AND comment IS NOT NULL AND comment != '' "
-            f"  GROUP BY name_key"
-            f"  UNION ALL "
-            f"  SELECT tc2.name_key, COUNT(*) as cnt "
-            f"  FROM trace_comments tc "
-            f"  JOIN trace_courses tc2 ON tc.tc_course_id = tc2.course_id "
-            f"    AND tc.tc_instructor_id = tc2.instructor_id "
-            f"    AND tc.tc_term_id = tc2.term_id "
-            f"  WHERE tc2.name_key IN ({placeholders}) "
-            f"  AND tc.comment IS NOT NULL AND tc.comment != '' "
-            f"  GROUP BY tc2.name_key"
-            f") sub GROUP BY name_key",
-            name_keys + name_keys
-        )
-        for r in combined_counts:
-            comment_counts[r["name_key"]] = int(r["cnt"])
+        trace_keys = list({trace_key(row) for row in rows})
+        rmp_counts, trace_counts = {}, {}
+        for r in query(
+            "SELECT name_key, COUNT(*) AS cnt FROM rmp_reviews "
+            f"WHERE name_key IN ({','.join(['%s'] * len(name_keys))}) "
+            "AND comment IS NOT NULL AND comment != '' "
+            "GROUP BY name_key",
+            name_keys,
+        ):
+            rmp_counts[r["name_key"]] = int(r["cnt"])
+        for r in query(
+            "SELECT tc2.name_key, COUNT(*) AS cnt "
+            "FROM trace_comments tc "
+            "JOIN trace_courses tc2 ON tc.tc_course_id = tc2.course_id "
+            "  AND tc.tc_instructor_id = tc2.instructor_id "
+            "  AND tc.tc_term_id = tc2.term_id "
+            f"WHERE tc2.name_key IN ({','.join(['%s'] * len(trace_keys))}) "
+            "  AND tc.comment IS NOT NULL AND tc.comment != '' "
+            "GROUP BY tc2.name_key",
+            trace_keys,
+        ):
+            trace_counts[r["name_key"]] = int(r["cnt"])
+        for row in rows:
+            comment_counts[row["name_key"]] = (
+                rmp_counts.get(row["name_key"], 0)
+                + trace_counts.get(trace_key(row), 0))
+
+    # Only fitted if some row on this board can use it — a board of single-source
+    # professors would otherwise pay for a catalog scan it never reads.
+    calibration = None
+    if any(r["rmp_rating"] is not None and r["trace_rating"] is not None
+           for r in rows):
+        calibration = rating_calibration(query)
 
     result = []
     for row in rows:
@@ -616,7 +801,35 @@ def goat_professors():
             "dept": row["department"],
             "rmpRating": round(row["rmp_rating"], 2) if row["rmp_rating"] else None,
             "traceRating": round(row["trace_rating"], 2) if row["trace_rating"] else None,
+            # Raw RMP put on TRACE's scale — the value the blend beside it was
+            # actually computed from, so avgRating stops looking like it ignored
+            # RMP (or overshot both sources). Two-source professors only: for an
+            # RMP-only professor avgRating already *is* this number, and printing
+            # it twice under two labels would imply a pooling that never
+            # happened. See rating_calibration above.
+            "rmpAdjusted": (
+                round(project_rmp(row["rmp_rating"], calibration), 2)
+                if calibration and row["rmp_rating"] is not None
+                and row["trace_rating"] is not None else None),
             "avgRating": round(row["avg_rating"], 2) if row["avg_rating"] else None,
+            # The board displays this as "Ratings", because it is the quantity
+            # every decision here is made on: the floor above gates on it, and
+            # RANKING_SCORE_SQL weights by it. It is RMP ratings + TRACE
+            # overall-question responses, ~95% the latter — the denominator of
+            # avgRating beside it (see precompute.trace_review_counts), and the
+            # same field the profile page's "Total Ratings" card displays, so the
+            # two pages cannot drift apart the way they used to.
+            #
+            # It replaced totalComments in that column, but NOT because comments
+            # are a smaller number — measured across all ten boards, comments
+            # exceed ratings on every single row, median 2.4x and ranging 1.3-3.3x
+            # (Matherne: 2,780 comments vs 1,104 ratings), since TRACE files one
+            # comment row per open-ended question per student. That spread is the
+            # point: the multiple tracks how many open-ended items a professor's
+            # course surveys happened to carry, so it is not an inflation a reader
+            # could mentally divide out. The reason is that a comment count
+            # explains neither who is on this list nor in what order.
+            "totalReviews": row["total_reviews"] or 0,
             "totalComments": comment_counts.get(row["name_key"], 0),
         })
     cache_set(cache_key, result)
@@ -1824,7 +2037,9 @@ def course_profile(code):
         return resp
 
     # Look up course in catalog
-    course = query_one("SELECT code, name, department FROM course_catalog WHERE code = %s", (code_norm,))
+    # SELECT * so a catalog built before is_topics existed still serves (the
+    # column reads as absent, i.e. not a topics code).
+    course = query_one("SELECT * FROM course_catalog WHERE code = %s", (code_norm,))
     if not course:
         return jsonify({"error": "Course not found"}), 404
 
@@ -1910,16 +2125,22 @@ def course_profile(code):
 
     avg_rating = (total_weighted / total_responses) if total_responses > 0 else None
 
+    # A topics code (e.g. HONR3310 running as "Election 2024" and "Language and
+    # Power" in the same term) is a container for unrelated classes, so a single
+    # course-level average would blend them. Its sections keep their own ratings.
+    is_topics = bool(course.get("is_topics"))
+
     summary = {
         "code": course["code"],
         "name": course["name"],
         "department": course["department"] or "",
-        "avgRating": round(avg_rating, 2) if avg_rating is not None else None,
+        "isTopics": is_topics,
+        "avgRating": round(avg_rating, 2) if avg_rating is not None and not is_topics else None,
         "avgEnrollment": round(total_enrollment / total_sections_with_enrollment) if total_sections_with_enrollment > 0 else None,
         "latestTermTitle": latest_term_title,
         # Count of TRACE "overall" question responses backing avgRating, for
         # AggregateRating JSON-LD (schema.org requires ratingCount alongside ratingValue).
-        "ratingCount": total_responses if total_responses > 0 else None,
+        "ratingCount": total_responses if total_responses > 0 and not is_topics else None,
     }
 
     # Build instructor aggregates

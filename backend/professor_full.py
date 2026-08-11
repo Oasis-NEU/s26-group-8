@@ -28,6 +28,17 @@ def _resolve_professor(slug, query_one):
     return prof
 
 
+def trace_key(prof):
+    """TRACE-side name_key for a catalog row.
+
+    Fuzzy-matched professors carry their TRACE scores under a different name
+    than RMP uses; precompute records which one in trace_name_key. NULL (exact
+    match, or a catalog built before the column existed) falls back to the
+    professor's own key. RMP-side lookups must keep using prof["name_key"].
+    """
+    return prof.get("trace_name_key") or prof["name_key"]
+
+
 def _course_code(display_name):
     dn = str(display_name or "")
     m = re.match(r"^([A-Z]+\d+)", dn)

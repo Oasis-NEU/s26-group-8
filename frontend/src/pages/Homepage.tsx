@@ -95,6 +95,43 @@ const Stars = ({ rating }: { rating: number }) => {
   );
 };
 
+/* ---- how the board is ordered ----
+   The board sorts on the rating shrunk toward the site average by how many
+   ratings back it, while the Rating column shows the unshrunk average — so that
+   column legitimately moves backwards between adjacent rows, 2-4 times per board
+   on every board.
+
+   Behind a "?" beside the heading rather than always on. What keeps the board
+   from going unexplained without it is that both Rating and Ratings carry
+   .goat-col-ranked, so the columns themselves still say two things feed the
+   sort; the tooltip is where the "why" lives, not the only place the fact
+   appears.
+
+   Three short sentences, each doing one job: what we rank on, which way the
+   trade runs, and what the reader will therefore see. Two attempts failed before
+   this. "Ranked by rating together with how many ratings back it" named the
+   mechanism and left the direction unstated. Adding "a near-perfect score from a
+   handful will not outrank a strong one from hundreds" fixed the direction but
+   packed the whole thing into two long clauses hinged on a dash, so the sentence
+   had to be re-read to be parsed.
+
+   Plain words over precise ones where they conflict: "how many students rated
+   them" rather than ratings or responses, "counts for less" rather than shrunk or
+   weighted, "highest to lowest" rather than descending. The reader this is for is
+   picking a class, not auditing an estimator.
+
+   Still no worked example. Every concrete pair has a prior at which it inverts
+   ("5.0 from 8 loses to 4.8 from 500" flips once the prior passes 4.76, and the
+   prior is re-measured from the corpus on every run, currently 4.4525), so a
+   number here is a sentence a future re-scrape can quietly turn into a lie. The
+   comparative version holds whatever the corpus does, because shrinkage always
+   pulls a thin sample toward the prior. */
+const RANK_NOTE =
+  'Professors are ranked by their rating and by how many students rated them. ' +
+  'A very high score from only a few students counts for less than a slightly ' +
+  'lower score from hundreds. That is why the ratings below do not always go ' +
+  'from highest to lowest.';
+
 /* ---- rating cell with hover/click tooltip ---- */
 const RatingCell = ({ prof, isOpen, onToggle }: {
   prof: Professor;
@@ -133,6 +170,22 @@ const RatingCell = ({ prof, isOpen, onToggle }: {
               {prof.rmpRating !== null ? prof.rmpRating.toFixed(2) : '—'}
             </span>
           </div>
+          {/* The number the blend was actually computed from. Without it the
+              panel listed three figures in two unit systems and invited an
+              arithmetic that cannot work: RMP 5.00 with TRACE 5.00 showed an Avg
+              of 4.99, because RMP 5.00 is 4.96 once projected. With it, Avg
+              always lies between the two values above — checked against all
+              1,708 two-source professors, and inherent to pooling, which cannot
+              leave the interval its inputs span.
+
+              Indented under RMP rather than given a row of its own, because it
+              is the same measurement in different units, not a third source. */}
+          {prof.rmpAdjusted != null && (
+            <div className="tooltip-row tooltip-row-sub">
+              <span className="tooltip-label">on the TRACE scale</span>
+              <span className="tooltip-value">{prof.rmpAdjusted.toFixed(2)}</span>
+            </div>
+          )}
           <div className="tooltip-row">
             <span className="tooltip-label">TRACE</span>
             <span className="tooltip-value">
@@ -144,6 +197,46 @@ const RatingCell = ({ prof, isOpen, onToggle }: {
             <span className="tooltip-label">Avg Rating</span>
             <span className="tooltip-value tooltip-blended">{prof.avgRating?.toFixed(2) ?? '—'}</span>
           </div>
+          {/* Why Avg Rating is not simply one of the numbers above it. Both cases
+              need saying, and for the same underlying reason: the column is on the
+              TRACE scale, which runs about 0.8 higher than RMP's and is 2.4x
+              narrower.
+
+              Written as two plain statements of what happens, in order, naming
+              RateMyProfessors in full once so "RMP" in the row above is anchored
+              for a reader who has not met the abbreviation. Earlier drafts said
+              "RMP's scale runs lower, so it converts first", which assumes the
+              reader already pictures two scales, and "leaning on whichever has
+              more responses behind it", where "leaning" and "behind it" both ask
+              to be decoded.
+
+              What the note deliberately does not do is name weights a reader can
+              try. It used to say "weighted by the ratings behind each", and those
+              weights do not work: pooling is inverse-variance, so one RMP rating
+              carries ~1.88x the weight of one TRACE response, and the
+              per-response variances behind that factor are measured from raw
+              review rows the catalog does not store. The exact sum is not
+              reproducible from anything on this page, so printing the two counts
+              would only make a false promise look better evidenced. "Counts for
+              more" is the part that is both true and checkable by eye against the
+              two numbers above.
+
+              With RMP alone, Avg no longer equals the RMP row at all. That is the
+              visible cost of putting every professor in the column on one scale,
+              and an unexplained 3.10 turning into 4.11 is exactly what reads as a
+              bug, so that case says outright that there is no TRACE score. */}
+          {prof.rmpRating !== null && prof.traceRating !== null ? (
+            <div className="tooltip-note">
+              RateMyProfessors scores run lower than TRACE scores, so the RMP score
+              is converted to the TRACE scale first. The two are then averaged, and
+              the one with more responses counts for more.
+            </div>
+          ) : prof.rmpRating !== null ? (
+            <div className="tooltip-note">
+              This professor has no TRACE scores, so the RMP score is converted to
+              the TRACE scale to keep it comparable.
+            </div>
+          ) : null}
         </div>
       )}
     </span>
@@ -485,7 +578,29 @@ const Homepage = () => {
       {/* ======== GOAT Professors Leaderboard ======== */}
       <section id="goated" className="section goat-section" ref={goatSectionRef}>
         <div className="section-header">
-          <h2 className="section-title">GOATED Professors</h2>
+          {/* Wrapper, not a bare sibling: .section-header is space-between, so an
+              unwrapped icon would fly to the far right instead of sitting beside
+              the heading. Outside the h2 so it stays out of the accessible name. */}
+          <div className="goat-title-row">
+            <h2 className="section-title">GOATED Professors</h2>
+            {/* A real button, not a styled span, so the tooltip is reachable
+                without a pointer: it opens on :hover for mice and :focus-visible
+                for keyboards, and on a touch device a tap fires the sticky
+                :hover. All three paths are CSS, so there is no open/closed state
+                to track here — unlike RatingCell, which needs click-toggling
+                because its tooltip sits inside a row that is itself a link. */}
+            <button
+              type="button"
+              className="goat-rank-help"
+              aria-label="How the ranking works"
+              aria-describedby="goat-rank-note"
+            >
+              ?
+              <span id="goat-rank-note" role="tooltip" className="goat-rank-tooltip">
+                {RANK_NOTE}
+              </span>
+            </button>
+          </div>
         </div>
 
         <div
@@ -531,8 +646,16 @@ const Homepage = () => {
             <span className="goat-col-rank">#</span>
             <span className="goat-col-name">Professor</span>
             <span className="goat-col-dept">Department</span>
-            <span className="goat-col-rating">Rating</span>
-            <span className="goat-col-reviews">Reviews</span>
+            {/* Both of these feed the sort, so both are marked. Marking only
+                Rating would restate the wrong mental model the note above exists
+                to correct — which is also why there is no sort caret here: a "↓"
+                on Rating alone reads as "sorted by Rating, descending", the exact
+                claim the note is there to deny. */}
+            <span className="goat-col-rating goat-col-ranked">Rating</span>
+            {/* "Ratings", not "Reviews": the number is RMP ratings plus TRACE
+                survey responses (~95% the latter), and 1,907 of the professors
+                eligible for these boards have no written RMP review at all. */}
+            <span className="goat-col-reviews goat-col-ranked">Ratings</span>
           </div>
 
           {profsLoading ? (
@@ -569,7 +692,9 @@ const Homepage = () => {
                   onToggle={() => setOpenTooltip(openTooltip === i ? null : i)}
                 />
                 <span className="goat-col-reviews">
-                  {(p.totalComments ?? 0).toLocaleString()}
+                  {/* No totalComments fallback: it is a comment count, so under a
+                      "Ratings" header it would show the wrong unit entirely. */}
+                  {(p.totalReviews ?? 0).toLocaleString()}
                 </span>
               </div>
             ))

@@ -10,8 +10,21 @@ export interface Professor {
   name: string;
   dept: string;
   rmpRating: number | null;
+  /** rmpRating projected onto TRACE's scale — the value avgRating was actually
+   *  pooled from. RMP runs ~0.8 lower and 2.4x wider than TRACE, so the two raw
+   *  numbers are not comparable and avgRating lands outside them often enough to
+   *  read as broken (RMP 5.00 with TRACE 5.00 gave 4.99). Null unless the
+   *  professor has both sources: with RMP alone avgRating already is this value,
+   *  so showing it twice would imply a pooling that never happened. */
+  rmpAdjusted?: number | null;
   traceRating: number | null;
   avgRating: number;
+  /** Ratings: RMP ratings + TRACE overall-question responses. What the
+   *  leaderboard's floor gates on, and what the ranking weights by. */
+  totalReviews?: number;
+  /** Rows of written text: RMP comments + TRACE comment rows. Not a subset of
+   *  totalReviews and usually 2-3x larger, because TRACE stores one row per
+   *  open-ended question per student. Unused by the leaderboard. */
   totalComments?: number;
 }
 
@@ -305,6 +318,9 @@ export interface CourseSummary {
   avgEnrollment: number | null;
   latestTermTitle: string;
   ratingCount: number | null;
+  /** A code that runs as several unrelated classes in one term, so it has no
+   *  single course rating. avgRating and ratingCount are null when set. */
+  isTopics?: boolean;
 }
 
 export interface CourseInstructorBreakdown {
