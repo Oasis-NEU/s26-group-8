@@ -1,1 +1,6 @@
 pytest
+# Five test modules import pandas, directly or through precompute. It is not in
+# requirements.txt (the Railway server never touches it) and requirements-data.txt
+# is not installed by ci.yml, so without it those modules fail at collection —
+# which aborts the whole session and takes the other ~650 tests down with them.
+pandas
