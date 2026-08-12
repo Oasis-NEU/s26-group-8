@@ -545,11 +545,16 @@
    at all times because React holds no open/closed state for it, and a
    display:none child cannot animate on :hover. visibility is also what keeps it
    out of the tab order and off the pointer while closed. */
+/* Opens upward. Downward put it directly over the college tab bar, which sits
+   ~50px below the heading: measured at 1440x1100 it fully covered CAMD, CSSH and
+   Engineering and clipped Business and Health Sciences, so reading why the board
+   is ordered that way hid the control for changing which board you are reading.
+   Above the heading is the hero's empty lower edge, which nothing competes for. */
 .goat-rank-tooltip {
   position: absolute;
-  top: calc(100% + 8px);
+  bottom: calc(100% + 8px);
   left: 50%;
-  transform: translateX(-50%) translateY(4px);
+  transform: translateX(-50%) translateY(-4px);
   z-index: 100;
   /* max-content first so the text sets the width, then capped: a tooltip that
      stretches to a paragraph measure is harder to read than two short lines.
@@ -572,17 +577,18 @@
   transition: opacity 0.15s, visibility 0.15s, transform 0.15s;
 }
 
+/* Arrow on the underside now, pointing down at the "?" it belongs to. */
 .goat-rank-tooltip::before {
   content: '';
   position: absolute;
-  top: -6px;
+  bottom: -6px;
   left: 50%;
   transform: translateX(-50%) rotate(45deg);
   width: 10px;
   height: 10px;
   background: #fff;
-  border-left: 1px solid #e0e0e0;
-  border-top: 1px solid #e0e0e0;
+  border-right: 1px solid #e0e0e0;
+  border-bottom: 1px solid #e0e0e0;
 }
 
 .goat-rank-help:hover .goat-rank-tooltip,

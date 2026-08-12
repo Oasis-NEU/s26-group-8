@@ -11,7 +11,7 @@ Two layers, both checked before any DB or data-store write:
             baseline to compare against. Set at ~80% of the healthy count.
 
   relative  Catches degraded scrapes that clear the absolute floor anyway:
-            3,100 professors beats the 3,000 floor and would then force-push
+            3,200 professors beats the 3,100 floor and would then force-push
             over the only copy of good data. 98% of last week's store, applied
             to every file rather than just the RMP pair.
 
@@ -47,17 +47,46 @@ FILES = {
     "trace_comments": ("trace_comments.csv", "trace_comments.zip"),
 }
 
-# ~80% of the healthy counts measured on the 2026-08-09 store (3,889 /
-# 44,508 / 99,784 / 813,731 / 2,855 / 1,529,226). The first two match the
-# floors that shipped in data-refresh.yml, so this is not a tightening.
-ABSOLUTE_FLOORS = {
-    "rmp_professors": 3000,
-    "rmp_reviews": 30000,
-    "trace_courses": 80000,
-    "trace_scores": 650000,
-    "professor_photos": 2200,
-    "trace_comments": 1200000,
+# The store as measured on 2026-08-12. Recorded rather than inferred because
+# ABSOLUTE_FLOORS is derived from it, and a floor whose basis is not written down
+# cannot be checked for drift — which is what went wrong with the first set.
+HEALTHY_COUNTS = {
+    "rmp_professors": 3892,
+    "rmp_reviews": 44536,
+    "trace_courses": 105376,
+    "trace_scores": 1102614,
+    "professor_photos": 3925,
+    "trace_comments": 1709263,
 }
+
+# ~80% of HEALTHY_COUNTS. These are a backstop for the case the relative floor
+# cannot cover — a first run, or a rebuilt store, where there is no baseline to
+# compare against.
+#
+# They were previously derived from the 2026-08-09 store and never re-measured,
+# and the store grew underneath them: trace_scores was at 59% of its floor's
+# basis and professor_photos at 56%, so a run could have lost 40% of either and
+# still passed as "catastrophic failure not detected". Re-derived here, with
+# FLOOR_BASIS_PCT and test_absolute_floors_track_the_healthy_counts pinning the
+# relationship so the next drift fails a test instead of going quiet.
+ABSOLUTE_FLOORS = {
+    "rmp_professors": 3100,
+    "rmp_reviews": 35600,
+    "trace_courses": 84000,
+    "trace_scores": 880000,
+    "professor_photos": 3100,
+    "trace_comments": 1360000,
+}
+
+# The band each floor must sit in, as a share of its HEALTHY_COUNTS entry. Wide
+# enough that the floors stay round numbers, tight enough that a floor left
+# behind by a growing store trips the test.
+FLOOR_BASIS_PCT = (75, 85)
+
+# How far above its floor a count may sit before the floor is called stale. A
+# store that has grown past this is not in danger, but its floor has stopped
+# meaning what the comment above says it means, so the run says so out loud.
+STALE_FLOOR_RATIO = 1.45
 
 RELATIVE_FLOOR_PCT = 98
 
@@ -178,6 +207,37 @@ def _cmd_baseline(args):
     return 0
 
 
+def stale_floors(counts):
+    """Advisory strings for floors the store has outgrown.
+
+    Not violations — a count far above its floor is the healthy direction, and
+    failing the run over it would block a legitimately growing corpus. But it is
+    the state that quietly disarmed the first set of floors: they were written as
+    "~80% of healthy", the store grew 35%, and nobody re-measured, so by the time
+    it mattered trace_scores could have lost 40% of its rows and still passed.
+
+    Nothing else notices, because the relative floor is doing the visible work on
+    every run that has a baseline, and the absolute floors only decide the runs
+    that do not. Printing this on every check is what makes the drift observable
+    before the run where it is the only thing standing there.
+    """
+    notes = []
+    for name in FILES:
+        count = counts.get(name)
+        floor = ABSOLUTE_FLOORS[name]
+        if count is None or not floor:
+            continue
+        if count >= floor * STALE_FLOOR_RATIO:
+            notes.append(
+                f"{name}: {count} rows is {count / floor:.2f}x its {floor} "
+                f"absolute floor. The floor was set at "
+                f"{FLOOR_BASIS_PCT[0]}-{FLOOR_BASIS_PCT[1]}% of a "
+                f"{HEALTHY_COUNTS[name]}-row store; re-measure "
+                "HEALTHY_COUNTS and ABSOLUTE_FLOORS."
+            )
+    return notes
+
+
 def _cmd_check(args):
     baseline = None
     if args.baseline and os.path.exists(args.baseline):
@@ -192,6 +252,9 @@ def _cmd_check(args):
         was = (baseline or {}).get(name)
         print(f"  {name}: {current if current is not None else 'absent'}"
               + (f" (previous: {was})" if was else ""))
+
+    for note in stale_floors(counts):
+        print(f"::warning::{note}")
 
     problems = check(counts, baseline, accept_lower=args.accept_lower)
     if args.accept_lower:

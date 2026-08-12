@@ -24,22 +24,20 @@ import zipfile
 
 from Better_Scraper.scrape_guard import (
     ABSOLUTE_FLOORS,
+    FLOOR_BASIS_PCT,
+    HEALTHY_COUNTS,
     RELATIVE_FLOOR_PCT,
+    STALE_FLOOR_RATIO,
     check,
     collect_counts,
     count_rows,
     resolve_path,
+    stale_floors,
 )
 
-# The real store as of the 2026-08-09 refresh.
-HEALTHY = {
-    "rmp_professors": 3889,
-    "rmp_reviews": 44508,
-    "trace_courses": 99784,
-    "trace_scores": 813731,
-    "professor_photos": 2855,
-    "trace_comments": 1529226,
-}
+# The real store as of the 2026-08-12 export, which is what ABSOLUTE_FLOORS is
+# derived from. Kept as the module's own record so a re-measure updates one place.
+HEALTHY = dict(HEALTHY_COUNTS)
 
 
 def write_csv(path, rows, header="a,b"):
@@ -121,15 +119,15 @@ def test_healthy_store_has_no_problems():
 
 
 def test_file_below_its_absolute_floor_is_a_problem():
-    counts = dict(HEALTHY, rmp_professors=2999)
+    counts = dict(HEALTHY, rmp_professors=3099)
     problems = check(counts, baseline=None)
     assert len(problems) == 1
     assert "rmp_professors" in problems[0]
-    assert "3000" in problems[0]
+    assert "3100" in problems[0]
 
 
 def test_file_exactly_at_its_absolute_floor_passes():
-    assert check(dict(HEALTHY, rmp_professors=3000), baseline=None) == []
+    assert check(dict(HEALTHY, rmp_professors=3100), baseline=None) == []
 
 
 def test_missing_file_is_a_problem_even_when_every_other_file_is_healthy():
@@ -141,6 +139,55 @@ def test_missing_file_is_a_problem_even_when_every_other_file_is_healthy():
     assert "issing" in problems[0]
 
 
+def test_absolute_floors_track_the_healthy_counts():
+    """A floor left behind by a growing store stops being the ~80% it claims.
+
+    The first set was derived from the 2026-08-09 store and never re-measured.
+    By 2026-08-12 the store had grown 35%, putting trace_scores at 59% of its
+    floor's basis and professor_photos at 56% — so either could have lost 40% of
+    its rows on a baseline-less run and been waved through as healthy. Nothing
+    failed, because the relative floor covers every run that has a baseline and
+    the absolute floors only decide the runs that do not.
+    """
+    lo, hi = FLOOR_BASIS_PCT
+    for name, floor in ABSOLUTE_FLOORS.items():
+        pct = floor * 100.0 / HEALTHY_COUNTS[name]
+        assert lo <= pct <= hi, (
+            f"{name}: floor {floor} is {pct:.0f}% of the recorded healthy "
+            f"{HEALTHY_COUNTS[name]}, outside the {lo}-{hi}% band. Re-measure "
+            "both together."
+        )
+
+
+def test_healthy_store_trips_no_staleness_warning():
+    # The floors are current as of HEALTHY_COUNTS, so the store they were
+    # measured from must not be reported as having outgrown them.
+    assert stale_floors(HEALTHY) == []
+
+
+def test_a_store_that_has_outgrown_its_floor_is_reported():
+    grown = dict(HEALTHY, trace_scores=int(
+        ABSOLUTE_FLOORS["trace_scores"] * STALE_FLOOR_RATIO) + 1)
+    notes = stale_floors(grown)
+    assert len(notes) == 1
+    assert "trace_scores" in notes[0]
+    assert "re-measure" in notes[0].lower()
+
+
+def test_staleness_is_advisory_not_a_violation():
+    # Growth is the healthy direction; it must never fail the run, or a growing
+    # corpus would block its own refresh.
+    grown = dict(HEALTHY, trace_scores=ABSOLUTE_FLOORS["trace_scores"] * 10)
+    assert stale_floors(grown) != []
+    assert check(grown, baseline=None) == []
+
+
+def test_a_missing_file_is_not_reported_as_stale():
+    # None means absent, which `check` already reports as a hard problem; a
+    # second advisory line about it would be noise.
+    assert stale_floors(dict(HEALTHY, trace_scores=None)) == []
+
+
 def test_every_file_gets_an_absolute_floor():
     # The shipped bash checked counts for rmp_professors and rmp_reviews only;
     # the other four got an existence check and nothing more.
@@ -150,12 +197,12 @@ def test_every_file_gets_an_absolute_floor():
 # ── relative floor ──────────────────────────────────────────────────────────
 
 def test_scrape_that_clears_the_absolute_floor_but_drops_vs_baseline_is_a_problem():
-    # The case the absolute floors miss: 3,100 professors beats the 3,000 floor
+    # The case the absolute floors miss: 3,200 professors beats the 3,100 floor
     # and would force-push over the only good copy.
-    problems = check(dict(HEALTHY, rmp_professors=3100), baseline=HEALTHY)
+    problems = check(dict(HEALTHY, rmp_professors=3200), baseline=HEALTHY)
     assert len(problems) == 1
-    assert "3100" in problems[0]
-    assert "3889" in problems[0]
+    assert "3200" in problems[0]
+    assert str(HEALTHY["rmp_professors"]) in problems[0]
 
 
 def test_count_exactly_at_the_relative_floor_passes():
@@ -170,11 +217,11 @@ def test_count_one_below_the_relative_floor_is_a_problem():
 
 
 def test_growth_over_baseline_passes():
-    assert check(dict(HEALTHY, rmp_reviews=44557), baseline=HEALTHY) == []
+    assert check(dict(HEALTHY, rmp_reviews=HEALTHY["rmp_reviews"] + 49), baseline=HEALTHY) == []
 
 
 def test_relative_floor_applies_to_every_file_not_just_the_rmp_pair():
-    problems = check(dict(HEALTHY, trace_scores=700000), baseline=HEALTHY)
+    problems = check(dict(HEALTHY, trace_scores=900000), baseline=HEALTHY)
     assert len(problems) == 1
     assert "trace_scores" in problems[0]
 
@@ -182,7 +229,7 @@ def test_relative_floor_applies_to_every_file_not_just_the_rmp_pair():
 def test_missing_baseline_degrades_to_absolute_floors(tmp_path):
     # First run, or a rebuilt data store: no baseline to compare against must
     # not block the run.
-    assert check(dict(HEALTHY, rmp_reviews=31000), baseline=None) == []
+    assert check(dict(HEALTHY, rmp_reviews=36000), baseline=None) == []
 
 
 def test_baseline_entry_of_zero_is_ignored(tmp_path):
@@ -192,13 +239,13 @@ def test_baseline_entry_of_zero_is_ignored(tmp_path):
 
 
 def test_accept_lower_skips_the_relative_floor():
-    counts = dict(HEALTHY, rmp_professors=3100)
+    counts = dict(HEALTHY, rmp_professors=3200)
     assert check(counts, baseline=HEALTHY, accept_lower=True) == []
 
 
 def test_accept_lower_still_enforces_absolute_floors():
     # The escape hatch is for a real drop, not for a broken scrape.
-    counts = dict(HEALTHY, rmp_professors=2999)
+    counts = dict(HEALTHY, rmp_professors=3099)
     assert len(check(counts, baseline=HEALTHY, accept_lower=True)) == 1
 
 

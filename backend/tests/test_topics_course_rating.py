@@ -1,11 +1,18 @@
 """A topics code must not serve a single course-level rating.
 
-49 course codes run under more than one title inside a single term — HONR3310 as
+46 course codes are flagged on the 2026-08-12 export (105,376 rows): they run
+under more than one *unrelated* title inside a single term — HONR3310 as
 "Election 2024", "Honors Seminar" and "Language and Power" at once; ARTE3901 as
 "ST: Assistive Design" and "ST: History of Comics". The code is a container for
 unrelated classes, so averaging their TRACE scores together produces a number
 that describes nothing. The page showed it anyway, and it also fed the
 AggregateRating JSON-LD and the catalog sort.
+
+67 codes carry more than one distinct title in a term; the other 21 are one title
+written two ways and are deliberately not flagged, since a false positive removes
+a real course's rating. Nearly all 21 differ only in a stripped ampersand
+("Financl Accounting  Reporting" / "Financl Accounting & Reporting"), which
+titles_are_variants absorbs through its abbreviation rule.
 
 precompute flags these (course_catalog.is_topics) and leaves avg_rating NULL for
 them; the API suppresses avgRating/ratingCount and says so with isTopics. The

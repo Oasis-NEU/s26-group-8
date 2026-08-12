@@ -602,11 +602,18 @@ const [showCourseTip, setShowCourseTip] = useState(() => localStorage.getItem('p
        describes every course — and computing it with (rmp + trace) / 2, as this
        did, put the headline number on neither scale and moved it half a point on
        a checkbox toggle. See utils/ratingBlend.ts. */
+    /* null, not 0: poolRatings returns null for a selection with no evidence
+       behind it — a course with no RMP ratings and no responses to TRACE's
+       overall question — and 0 is a rating, rendered as 0.00 under five empty
+       stars. The card beside it already shows "—" for the same selection,
+       because totalRatings is a sum rather than a coalesce, so the two disagreed
+       about whether there was any data at all. The value flows to
+       `stats.avgRating !== null ? ... : '—'`, which handles this. */
     const avgRating = poolRatings(
       rmpRating, rmpRatingsInSelection.length,
       traceRating, traceCount,
       profile.ratingBlend ?? null,
-    ) ?? 0;
+    );
     const rmpAdjusted = rmpRating !== null && traceRating !== null && profile.ratingBlend
       ? projectRmp(rmpRating, profile.ratingBlend)
       : null;
