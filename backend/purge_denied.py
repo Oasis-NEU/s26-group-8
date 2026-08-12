@@ -23,42 +23,76 @@ Run with --dry-run first. It reports the same counts without deleting.
 """
 
 import argparse
+import re
 import sys
 
-from denylist import denied_hashes, is_denied, is_denied_key
+from denylist import denied_hashes, is_denied, is_denied_key, name_key
+
+# Tables that reach a professor only through professor_slug — they carry no name
+# and no name_key, so a slug is the only handle the purge has on them.
+SLUG_TABLES = ("evidence", "reddit_mentions", "reddit_sentiment")
+
+
+def name_to_slug(name):
+    """precompute.name_to_slug, duplicated to stay import-light.
+
+    precompute pulls in pandas and numpy; this module is a small operational
+    script that should run anywhere psycopg does. test_denylist pins the two
+    implementations together.
+    """
+    return re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
 
 
 def find_targets(cur):
     """Everything the denylist matches, resolved to ids before anything is deleted.
 
-    Returns (slugs, name_keys, trace_keys). Matching happens in Python rather
-    than SQL because the list holds hashes, not names — there is no WHERE clause
-    that can express "sha256 of this column is in this set", and the alternative
-    is shipping the plaintext names into the query the file deliberately avoids
-    storing.
+    Returns (slugs, name_keys, trace_keys, review_ids). Matching happens in
+    Python rather than SQL because the list holds hashes, not names — there is no
+    WHERE clause that can express "sha256 of this column is in this set", and the
+    alternative is shipping the plaintext names into the query the file
+    deliberately avoids storing.
     """
     slugs, name_keys = set(), set()
 
     cur.execute("SELECT slug, name, name_key, trace_name_key FROM professors_catalog")
-    for slug, name, name_key, trace_name_key in cur.fetchall():
-        if is_denied(name) or is_denied_key(name_key) or is_denied_key(trace_name_key):
+    for slug, name, nk, trace_nk in cur.fetchall():
+        if is_denied(name) or is_denied_key(nk) or is_denied_key(trace_nk):
             slugs.add(slug)
-            name_keys.update(k for k in (name_key, trace_name_key) if k)
+            name_keys.update(k for k in (nk, trace_nk) if k)
 
     # The catalog is not enough on its own. Once precompute has run with the
     # denylist the professor has no catalog row at all, while their TRACE course
     # and comment rows are still loaded — so the raw tables have to be searched
     # by name too, or a purge after a refresh would find nothing and report clean.
+    #
+    # name_key(), not a hand-built "first last": the column this is compared
+    # against is written by precompute through the full normalization, so a key
+    # assembled without the NFKD fold, the whitespace collapse and ALIAS_MAP
+    # matches zero rows for any accented or double-spaced name — and the purge
+    # then reports success having deleted nothing.
     cur.execute("SELECT DISTINCT instructor_first_name, instructor_last_name FROM trace_courses")
     for first, last in cur.fetchall():
-        if is_denied(f"{first or ''} {last or ''}"):
-            name_keys.add(f"{(first or '').strip().lower()} {(last or '').strip().lower()}".strip())
+        full = f"{first or ''} {last or ''}"
+        if is_denied(full):
+            name_keys.add(name_key(full))
 
     cur.execute("SELECT DISTINCT professor_name, name_key FROM rmp_reviews")
-    for professor_name, name_key in cur.fetchall():
-        if is_denied(professor_name) or is_denied_key(name_key):
-            if name_key:
-                name_keys.add(name_key)
+    for professor_name, nk in cur.fetchall():
+        if is_denied(professor_name) or is_denied_key(nk):
+            if nk:
+                name_keys.add(nk)
+
+    # rmp_reviews.name_key is backfilled by precompute, so every row the weekly
+    # RMP load just wrote still has it NULL. The delete below keys on name_key,
+    # which means a purge run between that load and precompute — the ordinary
+    # case, since a request does not wait for the schedule — left them in place.
+    # Collected as ids, the same way rmp_professors is handled below: it keeps
+    # the plaintext name out of the SQL.
+    review_ids = set()
+    cur.execute("SELECT id, professor_name FROM rmp_reviews WHERE name_key IS NULL")
+    for review_id, professor_name in cur.fetchall():
+        if is_denied(professor_name):
+            review_ids.add(review_id)
 
     trace_keys = []
     if name_keys:
@@ -75,7 +109,38 @@ def find_targets(cur):
             if is_denied(f"{first or ''} {last or ''}"):
                 trace_keys.append((cid, iid, tid))
 
-    return sorted(slugs), sorted(name_keys), sorted(set(trace_keys))
+    # evidence, reddit_mentions and reddit_sentiment key on professor_slug and
+    # nothing else, so once precompute has dropped the catalog row there is no
+    # slug left to look them up by — `slugs` came back empty and every RAG row
+    # the chat can still retrieve and quote survived, while the tool printed a
+    # clean result. precompute derives the slug as name_to_slug(name_key), so the
+    # raw-table name match above reconstructs it.
+    #
+    # Exact slug only, never a prefix: collisions are broken with -2, -3 suffixes
+    # and those rows cannot be shown to belong to the denied professor. The
+    # catalog remains authoritative whenever the row still exists; this only
+    # fills the hole left after it is gone.
+    if name_keys:
+        bases = {name_to_slug(k) for k in name_keys}
+        for table in SLUG_TABLES:
+            try:
+                cur.execute(f"SELECT DISTINCT professor_slug FROM {table}")
+                found = cur.fetchall()
+            except Exception:
+                # Not deployed here — reddit_sentiment is absent on a database
+                # that never ran the reddit loader, and the matching delete step
+                # below skips for the same reason. Roll back before moving on:
+                # psycopg2 aborts the entire transaction on any error, so
+                # swallowing this bare would make every later statement fail with
+                # "current transaction is aborted" and the purge would skip its
+                # first real delete for an unrelated reason.
+                conn = getattr(cur, "connection", None)
+                if conn is not None:
+                    conn.rollback()
+                continue
+            slugs.update(row[0] for row in found if row[0] in bases)
+
+    return sorted(slugs), sorted(name_keys), sorted(set(trace_keys)), sorted(review_ids)
 
 
 def purge(conn, dry_run=False):
@@ -85,10 +150,11 @@ def purge(conn, dry_run=False):
         return {}
 
     cur = conn.cursor()
-    slugs, name_keys, trace_keys = find_targets(cur)
+    slugs, name_keys, trace_keys, review_ids = find_targets(cur)
     print(f"Matched {len(slugs)} catalog slugs, {len(name_keys)} name keys, "
-          f"{len(trace_keys)} TRACE (course, instructor, term) keys")
-    if not (slugs or name_keys or trace_keys):
+          f"{len(trace_keys)} TRACE (course, instructor, term) keys, "
+          f"{len(review_ids)} un-keyed review rows")
+    if not (slugs or name_keys or trace_keys or review_ids):
         print("Nothing to purge.")
         return {}
 
@@ -155,6 +221,15 @@ def purge(conn, dry_run=False):
             "DELETE FROM rmp_reviews WHERE name_key = ANY(%s)",
             "SELECT count(*) FROM rmp_reviews WHERE name_key = ANY(%s)",
             (name_keys,)))
+    if review_ids:
+        # The rows the step above cannot see, because their name_key is still
+        # NULL. Separate step rather than an OR so the count printed beside each
+        # label stays the count for that predicate.
+        steps.append((
+            "rmp_reviews (un-keyed)",
+            "DELETE FROM rmp_reviews WHERE id = ANY(%s)",
+            "SELECT count(*) FROM rmp_reviews WHERE id = ANY(%s)",
+            (review_ids,)))
 
     results = {}
     for label, delete_sql, count_sql, params in steps:

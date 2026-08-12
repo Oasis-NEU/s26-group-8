@@ -922,10 +922,19 @@ def main():
 
     # ── Data-deletion requests ──
     # Dropped here, after both sides have a name_key and before anything is
-    # derived from them, so one filter covers every downstream product:
-    # professors_catalog, course_catalog, the stats counts, the calibration fit
-    # and the response variances. Filtering later would leave a professor out of
-    # the catalog while their responses still moved the numbers on it.
+    # derived from them, so one filter covers every product keyed on a professor:
+    # professors_catalog and course_catalog, and the calibration fit, which is
+    # measured on rmp_profs. Filtering later would leave a professor out of the
+    # catalog while their rows still built it.
+    #
+    # It does NOT cover the two corpus-wide aggregates measured from the raw
+    # frames: measure_variances reads rmp_reviews["quality"] and the trace_scores
+    # count_1..5 columns, neither of which is filtered here, so a denied
+    # professor's responses still move the pooling weights. Nothing identifying
+    # survives that — a variance over ~44.5k ratings is not a disclosure — and
+    # the rows themselves go with purge_denied.py. Said plainly because the
+    # alternative is the next person auditing a deletion request believing one
+    # filter did more than it does.
     #
     # This is the enforcement point that matters most, because it is the one that
     # runs every refresh. A row deleted by hand comes back with the next rebuild;

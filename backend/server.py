@@ -750,7 +750,7 @@ def blend_params(query_fn, calibration=None):
     has to keep answering with the same rule avg_rating was built by. It cannot
     read avg_rating for that — the column describes the whole professor — and it
     cannot round-trip per checkbox, so the parameters come down with the payload
-    and the pooling happens client-side in lib/ratingBlend.ts.
+    and the pooling happens client-side in frontend/src/utils/ratingBlend.ts.
 
     Three numbers is the whole of it: the calibration pair to project RMP onto
     the TRACE scale, and one scalar for how much an RMP rating weighs against a

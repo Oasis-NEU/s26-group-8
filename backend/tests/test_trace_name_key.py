@@ -488,3 +488,62 @@ def test_routes_fall_back_to_name_key_when_not_fuzzy_matched(monkeypatch):
     server.app.test_client().get("/api/professors/dan-koloski")
     assert set(seen["trace_courses"]) == {RMP_KEY}
     assert set(seen["trace_scores"]) == {RMP_KEY}
+
+
+# ── the RAG corpus builder joins on the same key ────────────────────────────
+#
+# server.py, professor_full.trace_key and precompute.catalog_comment_count were
+# all taught to read TRACE under trace_name_key. scraper/load_evidence_to_crdb.py
+# was not, and it is the one that decides what the chat can retrieve — so for the
+# ~50 fuzzy-matched professors the profile page showed TRACE comments the chat
+# could not see, and the two halves of the site disagreed about the same person.
+#
+# Driven through sqlite rather than asserted as SQL text: the join is the
+# behaviour under test, and a substring check would pass on a query that no
+# longer runs.
+
+import sqlite3
+import sys as _sys
+
+_sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "scraper"))
+
+
+def _evidence_db(trace_name_key, course_key):
+    """A catalog row, one TRACE course under `course_key`, one comment on it."""
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.executescript("""
+        CREATE TABLE professors_catalog (slug TEXT, name_key TEXT, trace_name_key TEXT);
+        CREATE TABLE trace_courses (course_id INT, instructor_id INT, term_id INT,
+                                    name_key TEXT, course_code TEXT);
+        CREATE TABLE trace_comments (id INT, comment TEXT, tc_course_id INT,
+                                     tc_instructor_id INT, tc_term_id INT);
+    """)
+    db.execute("INSERT INTO professors_catalog VALUES (?,?,?)",
+               ("dan-koloski", RMP_KEY, trace_name_key))
+    db.execute("INSERT INTO trace_courses VALUES (?,?,?,?,?)",
+               (1, 7, 901, course_key, "EMGT6225"))
+    db.execute("INSERT INTO trace_comments VALUES (?,?,?,?,?)",
+               (11, "Professor Koloski explained the material clearly and gave "
+                    "genuinely helpful feedback on every assignment.", 1, 7, 901))
+
+    def query_fn(sql, params=()):
+        return [dict(r) for r in db.execute(sql, params).fetchall()]
+
+    return query_fn
+
+
+def test_trace_evidence_is_built_for_a_fuzzy_matched_professor():
+    """The catalog holds the RMP spelling; the course rows hold TRACE's."""
+    from load_evidence_to_crdb import build_trace_rows
+    rows = build_trace_rows(_evidence_db(TRACE_NAME, TRACE_NAME))
+    assert len(rows) == 1, "the fuzzy-matched professor's TRACE comments were dropped"
+    assert rows[0]["professor_slug"] == "dan-koloski"
+
+
+def test_trace_evidence_still_builds_for_an_exactly_matched_professor():
+    """trace_name_key is NULL unless a fuzzy match happened — fall back, not skip."""
+    from load_evidence_to_crdb import build_trace_rows
+    rows = build_trace_rows(_evidence_db(None, RMP_KEY))
+    assert len(rows) == 1
+    assert rows[0]["professor_slug"] == "dan-koloski"

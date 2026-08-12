@@ -334,15 +334,25 @@ class RMPSchool:
 
     def _parse_ratings(
         self, data: Dict[str, Any]
-    ) -> Tuple[List[Review], bool, Optional[str]]:
+    ) -> Tuple[List[Review], bool, Optional[str], bool]:
+        """Parse one ratings page.
+
+        Returns (reviews, has_next, cursor, ok). `ok` is False when the payload
+        carried no ratings connection at all — an `errors` array, a null node, a
+        node without `ratings`. That is a 200-level failure, which is what RMP
+        soft-throttling looks like, and it is *not* the same as a page that
+        legitimately holds zero ratings. Both parse to an empty review list, so
+        the caller cannot tell them apart from the reviews alone; this flag is
+        the only thing that distinguishes them.
+        """
         reviews: List[Review] = []
         teacher_node: Optional[Dict[str, Any]] = (data.get("data") or {}).get("node")
         if not teacher_node:
-            return reviews, False, None
+            return reviews, False, None, False
 
         ratings_conn: Optional[Dict[str, Any]] = teacher_node.get("ratings")
         if not ratings_conn:
-            return reviews, False, None
+            return reviews, False, None, False
 
         edges: List[Dict[str, Any]] = ratings_conn.get("edges", [])
         page_info: Dict[str, Any] = ratings_conn.get("pageInfo", {})
@@ -388,14 +398,17 @@ class RMPSchool:
             )
             reviews.append(review)
 
-        return reviews, page_info.get("hasNextPage", False), page_info.get("endCursor")
+        return reviews, page_info.get("hasNextPage", False), page_info.get("endCursor"), True
 
     def _fetch_reviews_for_professor(self, prof: Professor) -> Tuple[List[Review], bool]:
         """Fetch all reviews for a single professor. Thread-safe.
 
         Returns (reviews, complete). `complete` is False only when pagination
-        stopped because a page request failed — the one case where the list is
-        short for a reason that a retry might fix.
+        stopped because a page failed — the one case where the list is short for
+        a reason that a retry might fix. "Failed" covers both a dead request
+        (_graphql_post exhausted its retries) and a 200 carrying no ratings
+        connection (_parse_ratings' `ok`), since RMP signals throttling the
+        second way at least as often as the first.
 
         Hitting MAX_REVIEW_PAGES or MAX_REVIEWS_PER_PROFESSOR is a deliberate cap
         and counts as complete: retrying would truncate at the same place. So
@@ -428,7 +441,16 @@ class RMPSchool:
                 # partial mean as their rating.
                 return reviews, False
 
-            new_reviews, has_next, cursor = self._parse_ratings(data)
+            new_reviews, has_next, cursor, ok = self._parse_ratings(data)
+            if not ok:
+                # A 200 with no ratings connection — RMP soft-throttling a warm
+                # session. Byte-for-byte this reaches the same `not new_reviews`
+                # break as a real last page, so before `ok` existed the most
+                # likely truncation mode was reported as a *complete* fetch:
+                # never retried, and republished by precompute as the professor's
+                # whole rating history. Same handling as a dead request.
+                return reviews, False
+
             reviews.extend(new_reviews)
             if not new_reviews:
                 break
@@ -496,7 +518,18 @@ class RMPSchool:
                         # Keep whichever attempt saw more of the list. A retry
                         # that truncates earlier than the first pass would
                         # otherwise overwrite good rows with fewer.
-                        if complete or len(reviews) > len(prof.reviews):
+                        #
+                        # `complete` is deliberately not sufficient on its own.
+                        # It used to lead this condition, which meant any
+                        # complete retry won however little it saw: a retry whose
+                        # page 1 came back empty returned ([], True) and replaced
+                        # a held 300 with none, marked done, so nothing retried
+                        # it and precompute published num_ratings 0. Equal length
+                        # still upgrades, so a retry that merely confirms the
+                        # same rows lets the professor leave the retry pass
+                        # instead of being re-fetched every run.
+                        if (len(reviews) > len(prof.reviews)
+                                or (complete and len(reviews) >= len(prof.reviews))):
                             prof.reviews = reviews
                             prof.reviews_complete = complete
                     except Exception:

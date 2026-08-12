@@ -62,6 +62,19 @@ def test_normalize_matches_precomputes_rule():
         assert normalize_name(raw) == pc_normalize(raw), raw
 
 
+def test_purge_slug_rule_matches_precomputes():
+    """purge_denied reconstructs slugs precompute wrote; the rules must agree.
+
+    Duplicated for the same reason normalize_name is — precompute pulls in pandas
+    and numpy, and purge_denied is a small operational script.
+    """
+    from precompute import name_to_slug as pc_slug
+    from purge_denied import name_to_slug
+    for key in ["julia garrett", "jose garcia", "o'brien smith",
+                "md nazmus sakib miazi", "zhiyuan (katherine) zhang"]:
+        assert name_to_slug(key) == pc_slug(key), key
+
+
 def test_a_listed_professor_is_denied(listfile):
     listfile("Julia Garrett")
     assert is_denied("Julia Garrett")
@@ -253,32 +266,41 @@ def test_evidence_builders_import_the_filter():
 # ── the purge resolves identity before deleting ─────────────────────────────
 
 class FakeCursor:
-    """Answers find_targets' four probe queries from canned rows."""
+    """Answers find_targets' probe queries from canned rows.
 
-    def __init__(self, catalog, trace_names, rmp_reviews, trace_keys, null_key_rows=()):
+    Dispatch is on (table, shape) rather than a single substring: several probes
+    now carry `name_key IS NULL`, so matching that alone would answer the
+    rmp_reviews probe with trace_courses rows.
+    """
+
+    def __init__(self, catalog, trace_names, rmp_reviews, trace_keys,
+                 null_key_rows=(), slug_rows=(), null_key_reviews=()):
         self._data = {
-            "professors_catalog": catalog,
-            "instructor_first_name, instructor_last_name FROM trace_courses": trace_names,
-            "professor_name, name_key FROM rmp_reviews": rmp_reviews,
-            "course_id, instructor_id, term_id FROM trace_courses": trace_keys,
-            "name_key IS NULL": null_key_rows,
+            "catalog": catalog,
+            "trace_names": trace_names,
+            "rmp_reviews": rmp_reviews,
+            "trace_keys": trace_keys,
+            "trace_null": null_key_rows,
+            "slugs": slug_rows,
+            "rmp_null": null_key_reviews,
         }
         self._rows = []
 
     def execute(self, sql, params=None):
         flat = " ".join(sql.split())
-        if "name_key IS NULL" in flat:
-            self._rows = self._data["name_key IS NULL"]
-        elif "FROM professors_catalog" in flat:
-            self._rows = self._data["professors_catalog"]
-        elif "instructor_first_name, instructor_last_name" in flat:
-            self._rows = self._data["instructor_first_name, instructor_last_name FROM trace_courses"]
+        if "FROM professors_catalog" in flat:
+            key = "catalog"
+        elif "professor_slug FROM" in flat:
+            key = "slugs"
         elif "FROM rmp_reviews" in flat:
-            self._rows = self._data["professor_name, name_key FROM rmp_reviews"]
+            key = "rmp_null" if "name_key IS NULL" in flat else "rmp_reviews"
+        elif "instructor_first_name, instructor_last_name" in flat:
+            key = "trace_null" if "name_key IS NULL" in flat else "trace_names"
         elif "course_id, instructor_id, term_id" in flat:
-            self._rows = self._data["course_id, instructor_id, term_id FROM trace_courses"]
+            key = "trace_null" if "name_key IS NULL" in flat else "trace_keys"
         else:
-            self._rows = []
+            key = None
+        self._rows = self._data.get(key, []) if key else []
 
     def fetchall(self):
         return list(self._rows)
@@ -294,7 +316,7 @@ def test_purge_finds_the_professor_through_the_catalog(listfile):
         rmp_reviews=[("Julia Garrett", "julia garrett")],
         trace_keys=[(1, 10, 202430), (2, 10, 202510)],
     )
-    slugs, name_keys, trace_keys = find_targets(cur)
+    slugs, name_keys, trace_keys, _ = find_targets(cur)
     assert slugs == ["julia-garrett"]
     assert "julia garrett" in name_keys
     assert "garrett morrow" not in name_keys
@@ -316,10 +338,144 @@ def test_purge_still_finds_them_after_precompute_removed_the_catalog_row(listfil
         rmp_reviews=[],
         trace_keys=[(1, 10, 202430)],
     )
-    slugs, name_keys, trace_keys = find_targets(cur)
+    slugs, name_keys, trace_keys, _ = find_targets(cur)
     assert slugs == []
     assert name_keys == ["julia garrett"]
     assert trace_keys == [(1, 10, 202430)]
+
+
+def test_purge_recovers_evidence_slugs_the_catalog_can_no_longer_resolve(listfile):
+    """evidence and the reddit tables key on professor_slug, nothing else.
+
+    Once precompute has dropped the catalog row there is no slug to look up, so
+    `slugs` came back empty and every RAG row the chat can still retrieve and
+    quote survived the purge — while the tool printed a clean result. The slug is
+    name_to_slug(name_key), so the raw-table name match reconstructs it.
+    """
+    from purge_denied import find_targets
+    listfile("Julia Garrett")
+    cur = FakeCursor(
+        catalog=[("garrett-morrow", "Garrett Morrow", "garrett morrow", None)],
+        trace_names=[("Julia", "Garrett")],
+        rmp_reviews=[],
+        trace_keys=[],
+        slug_rows=[("julia-garrett",), ("garrett-morrow",)],
+    )
+    slugs, _, _, _ = find_targets(cur)
+    assert slugs == ["julia-garrett"]
+
+
+def test_slug_recovery_does_not_widen_to_deduped_variants(listfile):
+    """Reconstruction takes the exact slug and nothing adjacent.
+
+    precompute breaks name_to_slug collisions with -2, -3. Sweeping those in on a
+    prefix match would delete rows this tool cannot prove belong to the denied
+    professor, and over-deletion is the one failure a purge cannot undo. The
+    catalog path is still authoritative when the row exists; this only fills the
+    hole left after precompute drops it.
+    """
+    from purge_denied import find_targets
+    listfile("Julia Garrett")
+    cur = FakeCursor(
+        catalog=[],
+        trace_names=[("Julia", "Garrett")],
+        rmp_reviews=[],
+        trace_keys=[],
+        slug_rows=[("julia-garrett",), ("julia-garrett-2",)],
+    )
+    slugs, _, _, _ = find_targets(cur)
+    assert slugs == ["julia-garrett"]
+
+
+def test_a_missing_slug_table_does_not_poison_the_transaction(listfile):
+    """The slug probe is the first query here allowed to fail.
+
+    psycopg2 aborts the whole transaction on any error, so swallowing the
+    exception without a rollback leaves every later statement failing with
+    "current transaction is aborted" — the purge would then skip its first real
+    delete step for a reason that has nothing to do with it. reddit_sentiment is
+    genuinely absent on a database that never ran the reddit loader.
+    """
+    from purge_denied import find_targets
+
+    class Poisonable(FakeCursor):
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self.rolled_back = 0
+            outer = self
+
+            class Conn:
+                def rollback(self):
+                    outer.rolled_back += 1
+
+            self.connection = Conn()
+
+        def execute(self, sql, params=None):
+            if "professor_slug FROM reddit_sentiment" in " ".join(sql.split()):
+                raise RuntimeError('relation "reddit_sentiment" does not exist')
+            super().execute(sql, params)
+
+    listfile("Julia Garrett")
+    cur = Poisonable(
+        catalog=[],
+        trace_names=[("Julia", "Garrett")],
+        rmp_reviews=[],
+        trace_keys=[],
+        slug_rows=[("julia-garrett",)],
+    )
+    slugs, name_keys, _, _ = find_targets(cur)
+    assert slugs == ["julia-garrett"], "a later probe was lost to the failed one"
+    assert name_keys == ["julia garrett"]
+    assert cur.rolled_back == 1, "the failed probe left the transaction aborted"
+
+
+def test_purge_matches_a_trace_name_that_needs_normalizing(listfile):
+    """The fallback key skipped the NFKD fold and the whitespace collapse.
+
+    trace_courses.name_key is written by precompute through the full
+    normalization, so a hand-built "  josé  garcía " key matched zero rows and
+    the professor's TRACE data survived a purge that reported success.
+    """
+    from purge_denied import find_targets
+    listfile("José García")
+    cur = FakeCursor(
+        catalog=[],
+        trace_names=[("José", "  García ")],
+        rmp_reviews=[],
+        trace_keys=[(3, 11, 202510)],
+    )
+    _, name_keys, _, _ = find_targets(cur)
+    assert name_keys == ["jose garcia"]
+
+
+def test_purge_resolves_an_alias_on_the_trace_fallback_path(listfile):
+    """The fallback also skipped ALIAS_MAP, which name_key applies."""
+    from prof_aliases import ALIAS_MAP
+    from purge_denied import find_targets
+    alias = next(iter(ALIAS_MAP))
+    listfile(ALIAS_MAP[alias])
+    first, _, last = alias.partition(" ")
+    cur = FakeCursor(catalog=[], trace_names=[(first, last)],
+                     rmp_reviews=[], trace_keys=[])
+    _, name_keys, _, _ = find_targets(cur)
+    assert name_keys == [ALIAS_MAP[alias]]
+
+
+def test_purge_collects_review_ids_whose_name_key_is_not_backfilled_yet(listfile):
+    """precompute backfills rmp_reviews.name_key; rows the loader just wrote are
+    NULL, and the delete is `WHERE name_key = ANY(...)`, so a purge run between
+    the weekly RMP load and precompute left them behind."""
+    from purge_denied import find_targets
+    listfile("Julia Garrett")
+    cur = FakeCursor(
+        catalog=[],
+        trace_names=[],
+        rmp_reviews=[("Julia Garrett", "julia garrett")],
+        trace_keys=[],
+        null_key_reviews=[(101, "Julia Garrett"), (102, "Garrett Morrow")],
+    )
+    _, _, _, review_ids = find_targets(cur)
+    assert review_ids == [101]
 
 
 def test_purge_matches_a_fuzzy_matched_trace_spelling(listfile):
@@ -332,7 +488,7 @@ def test_purge_matches_a_fuzzy_matched_trace_spelling(listfile):
         rmp_reviews=[],
         trace_keys=[(5, 7, 202510)],
     )
-    slugs, name_keys, _ = find_targets(cur)
+    slugs, name_keys, _, _ = find_targets(cur)
     assert slugs == ["sakib-miazi"]
     assert "md nazmus sakib miazi" in name_keys
 
@@ -349,7 +505,7 @@ def test_purge_picks_up_courses_whose_name_key_is_not_backfilled_yet(listfile):
         null_key_rows=[(9, 3, 202530, "Julia", "Garrett"),
                        (8, 4, 202530, "Garrett", "Morrow")],
     )
-    _, _, trace_keys = find_targets(cur)
+    _, _, trace_keys, _ = find_targets(cur)
     assert trace_keys == [(9, 3, 202530)]
 
 
@@ -361,7 +517,7 @@ def test_nothing_matches_an_empty_list(listfile):
         rmp_reviews=[("Julia Garrett", "julia garrett")],
         trace_keys=[(1, 10, 202430)],
     )
-    assert find_targets(cur) == ([], [], [])
+    assert find_targets(cur) == ([], [], [], [])
 
 
 def test_migrate_filter_survives_a_transform_that_yields_nothing(listfile):

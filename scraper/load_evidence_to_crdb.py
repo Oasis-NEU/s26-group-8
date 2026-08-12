@@ -234,7 +234,14 @@ def build_trace_rows(query_fn) -> list:
         JOIN trace_courses c
           ON tc.tc_course_id = c.course_id AND tc.tc_instructor_id = c.instructor_id
          AND tc.tc_term_id = c.term_id
-        JOIN professors_catalog p ON p.name_key = c.name_key
+        -- COALESCE, not p.name_key: for a fuzzy-matched professor the catalog
+        -- holds the RMP spelling while trace_courses holds TRACE's, so a plain
+        -- equality drops every one of their comments from the corpus and the
+        -- chat cannot see what the profile page shows. trace_name_key is NULL
+        -- unless a fuzzy match happened, which is why this falls back rather
+        -- than joining on it outright. Same rule as professor_full.trace_key.
+        JOIN professors_catalog p
+          ON COALESCE(p.trace_name_key, p.name_key) = c.name_key
         WHERE tc.comment IS NOT NULL AND tc.comment <> ''
         ORDER BY tc.id
     """, ())

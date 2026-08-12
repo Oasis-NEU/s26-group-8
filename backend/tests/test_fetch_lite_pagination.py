@@ -152,6 +152,51 @@ def test_the_per_professor_review_cap_is_also_complete():
         fetch_lite.MAX_REVIEWS_PER_PROFESSOR = original
 
 
+# ── a 200 that carries no ratings connection ────────────────────────────────
+#
+# _graphql_post returning None is the *transport* failure. RMP also soft-fails:
+# HTTP 200 with an `errors` array and a null node, which is what throttling looks
+# like once the session is warm. _parse_ratings reads both of those as "no
+# ratings connection", and the loop's `if not new_reviews: break` then reported
+# the partial list as complete — so the most likely truncation mode was the one
+# the flag could not see.
+
+
+def _soft_error_page(body=None):
+    """HTTP 200 whose payload carries no ratings connection."""
+    return body if body is not None else {"errors": [{"message": "rate limited"}]}
+
+
+@pytest.mark.parametrize("body", [
+    {"errors": [{"message": "rate limited"}]},   # no data key at all
+    {"data": {"node": None}},                    # node explicitly null
+    {"data": {"node": {}}},                      # node without ratings
+    {"data": {"node": {"ratings": None}}},       # ratings explicitly null
+])
+def test_a_soft_error_mid_pagination_is_incomplete(body):
+    school = _school([_page(100, True), _soft_error_page(body)])
+    reviews, complete = school._fetch_reviews_for_professor(_prof())
+    assert len(reviews) == 100
+    assert complete is False, f"soft error {body} reported as a complete fetch"
+
+
+def test_a_soft_error_on_the_first_page_is_incomplete():
+    school = _school([_soft_error_page()])
+    reviews, complete = school._fetch_reviews_for_professor(_prof())
+    assert reviews == []
+    assert complete is False
+
+
+def test_a_soft_error_puts_the_professor_in_the_retry_pass():
+    """The point of detecting it: it has to be re-fetched, not published."""
+    school = _school([_page(100, True), _soft_error_page(),   # first pass
+                      _page(100, True), _page(40, False)])    # retry: clean
+    prof = _prof()
+    _run_scrape(school, [prof])
+    assert len(prof.reviews) == 140
+    assert prof.reviews_complete is True
+
+
 # ── what the retry pass selects on ──────────────────────────────────────────
 
 def _run_scrape(school, profs):
@@ -187,6 +232,47 @@ def test_a_worse_retry_does_not_overwrite_a_longer_partial():
     _run_scrape(school, [prof])
     assert len(prof.reviews) == 100
     assert prof.reviews_complete is False
+
+
+def test_a_shorter_complete_retry_does_not_overwrite_a_longer_partial():
+    """The gap the `complete or ...` short-circuit left open.
+
+    The condition above this reads "keep whichever attempt saw more", but
+    `complete` was checked first, so a retry that came back complete replaced the
+    first pass however little it saw. Worst case the retry's page 1 is empty:
+    ([], True) overwrites 100 held reviews with none and marks the professor
+    done, so nothing retries them and precompute publishes num_ratings 0.
+    """
+    school = _school([_page(100, True), None,     # first pass: 100, truncated
+                      _page(10, False)])          # retry: 10, but complete
+    prof = _prof()
+    _run_scrape(school, [prof])
+    assert len(prof.reviews) == 100, "a shorter complete retry overwrote good rows"
+    assert prof.reviews_complete is False
+
+
+def test_an_empty_complete_retry_never_zeroes_a_professor():
+    """The worst case of the above, called out on its own: 100 rows -> 0."""
+    school = _school([_page(100, True), None,     # first pass: 100, truncated
+                      _page(0, has_next=False)])  # retry: complete, empty
+    prof = _prof()
+    _run_scrape(school, [prof])
+    assert len(prof.reviews) == 100, "an empty retry zeroed a professor"
+    assert prof.reviews_complete is False
+
+
+def test_an_equal_length_complete_retry_upgrades_the_flag():
+    """Same rows, now known complete — take it, so the retry pass can converge.
+
+    Without the `>=` the professor stays incomplete forever and is re-fetched
+    every run, which is the cost the old `not p.reviews` predicate already paid.
+    """
+    school = _school([_page(100, True), None,     # first pass: 100, truncated
+                      _page(100, False)])         # retry: same 100, complete
+    prof = _prof()
+    _run_scrape(school, [prof])
+    assert len(prof.reviews) == 100
+    assert prof.reviews_complete is True
 
 
 def test_still_incomplete_professors_are_named_in_the_output(capsys):
