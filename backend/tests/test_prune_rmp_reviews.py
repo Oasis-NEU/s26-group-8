@@ -23,6 +23,7 @@ import csv
 
 import pytest
 
+from Better_Scraper.scrape_guard import RELATIVE_FLOOR_PCT
 from prune_rmp_reviews import (
     MAX_PRUNE_PCT,
     csv_keys,
@@ -193,6 +194,25 @@ def test_prune_larger_than_the_ceiling_is_refused(tmp_path):
     assert not any("DELETE" in sql for sql, _ in conn.executed)
 
 
+def test_ceiling_sits_below_the_scrape_guard_tolerance():
+    """The two thresholds have to compose, not just each be reasonable alone.
+
+    scrape_guard passes a scrape at RELATIVE_FLOOR_PCT of the previous week, so
+    the rows a degraded-but-passing scrape may be missing is (100 -
+    RELATIVE_FLOOR_PCT)% of the table — and the prune reads every missing row as
+    a deletion on RMP. If the ceiling is at or above that, the whole band the
+    guard waves through is a band the prune deletes without asking: two rails
+    that each look sound and together stop nothing. They shipped at 5% and 98%,
+    which is exactly that hole.
+    """
+    guard_tolerance_pct = 100 - RELATIVE_FLOOR_PCT
+    assert MAX_PRUNE_PCT < guard_tolerance_pct, (
+        f"a scrape may lose {guard_tolerance_pct}% of rows and still pass "
+        f"scrape_guard, but the prune deletes up to {MAX_PRUNE_PCT}% without "
+        "--force, so that loss is silently prunable"
+    )
+
+
 def test_force_overrides_the_ceiling(tmp_path):
     path = write_reviews(tmp_path / "r.csv", [("Ann Lee", "CS2500", "Jan 1st, 2025", "a")])
     conn = FakeConn([(1, "Ann Lee", "CS2500", "Jan 1st, 2025"),
@@ -204,9 +224,9 @@ def test_force_overrides_the_ceiling(tmp_path):
 # ── executing the delete ────────────────────────────────────────────────────
 
 def test_stale_rows_are_deleted_by_id(tmp_path):
-    # 1 stale in 40 rows is 2.5%, under the ceiling, so this exercises the
+    # 1 stale in 200 rows is 0.5%, under the ceiling, so this exercises the
     # default path rather than --force.
-    live = [(f"Prof {i}", f"CS{i}", "Jan 1st, 2025", "a") for i in range(39)]
+    live = [(f"Prof {i}", f"CS{i}", "Jan 1st, 2025", "a") for i in range(199)]
     path = write_reviews(tmp_path / "r.csv", live)
     rows = [(i, name, course, date) for i, (name, course, date, _) in enumerate(live)]
     rows.append((999, "Gone", "CS9999", "Dec 9th, 2024"))

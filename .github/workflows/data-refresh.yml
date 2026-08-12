@@ -122,8 +122,11 @@ jobs:
       # Reviews deleted on RMP have to leave the table too, or the list keeps
       # rendering rows the count beside it (derived from the fresh CSV by
       # precompute) has already dropped. Runs before precompute so the reviews
-      # and the counts describe the same set. Refuses to delete more than 5% of
-      # the table without --force; the real weekly delta is tens of rows.
+      # and the counts describe the same set. Refuses to delete more than 1% of
+      # the table without --force; the real weekly delta is tens of rows (~0.1%).
+      # The ceiling is deliberately under the 2% loss scrape_guard tolerates, so
+      # a degraded scrape that clears the guard stops here instead of having its
+      # missing rows read as RMP deletions.
       - name: Prune reviews deleted on RMP
         if: ${{ !inputs.dry_run }}
         working-directory: backend

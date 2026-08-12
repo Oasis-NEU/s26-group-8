@@ -46,8 +46,20 @@ DEFAULT_CSV = os.path.join(
 BATCH_SIZE = 5000
 
 # A prune bigger than this share of the table means the CSV is wrong, not that
-# RMP deleted a fifth of its reviews. The weekly delta is tens of rows.
-MAX_PRUNE_PCT = 5
+# RMP deleted that many reviews. The weekly delta is tens of rows (~0.1%).
+#
+# The ceiling has to sit BELOW what scrape_guard tolerates, or it never fires on
+# the case it exists for. scrape_guard passes a scrape at RELATIVE_FLOOR_PCT
+# (98%) of the previous week, so a degraded-but-passing scrape can arrive missing
+# 2% of its rows — ~890 on 44.5k — and the prune reads every one of them as
+# "deleted on RMP". At a 5% ceiling that whole band was silently prunable: the
+# guard said yes and the ceiling said yes. Below 2%, a scrape bad enough to clear
+# the guard on a technicality stops here instead, and the operator decides.
+#
+# 1% keeps ~445 rows of headroom on the current table, ~9x the observed weekly
+# delta. test_ceiling_sits_below_the_scrape_guard_tolerance pins the relationship
+# so the two constants cannot drift back apart.
+MAX_PRUNE_PCT = 1
 
 csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
 
@@ -200,7 +212,7 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true",
                         help="Report what would be deleted, delete nothing")
     parser.add_argument("--force", action="store_true",
-                        help=f"Allow a prune over {MAX_PRUNE_PCT}% of the table")
+                        help=f"Allow a prune over {MAX_PRUNE_PCT}%% of the table")
     args = parser.parse_args(argv)
 
     if not os.path.exists(args.csv):
