@@ -331,10 +331,17 @@ TABLES = {
 }
 
 
-# Full-replace is only safe for tables whose CSV is a complete snapshot of the
-# source each run (the weekly RMP scrape). TRACE/photo CSVs are cumulative
-# artifacts — replacing from them would destroy data.
-REPLACE_ALLOWED = {"rmp_professors", "rmp_reviews"}
+# Full-replace is only safe for a table whose CSV is a complete snapshot of the
+# source each run AND whose ids nothing else references. TRACE/photo CSVs are
+# cumulative artifacts — replacing from them would destroy data.
+#
+# rmp_reviews meets the snapshot half but fails the second: evidence.source_ref
+# for RMP is the review's rowid (scraper/load_evidence_to_crdb.py:208), so
+# truncating orphans the RMP half of the RAG corpus and forces a re-embed. The
+# TRUNCATE also commits before the reload starts, emptying a table the site
+# reads on every professor page. prune_rmp_reviews.py converges the table
+# without either cost — use that instead.
+REPLACE_ALLOWED = {"rmp_professors"}
 
 
 UNIQUE_CONSTRAINTS = {
@@ -425,10 +432,11 @@ def main():
         print(f"  Creating table if not exists...")
         create_table(conn, conf["create_sql"])
 
-        # Full replace: empty the table so RMP-side deletions/edits stop drifting
-        # (the upsert path never deletes or updates). Only runs after the workflow's
-        # sanity floors passed, so the CSV is known-good. rmp_reviews.name_key is
-        # NULL from here until precompute step 5 refills it later in the same run.
+        # Full replace: empty the table so RMP-side edits stop drifting, since
+        # the upsert path never updates. Reachable only for rmp_professors (see
+        # REPLACE_ALLOWED), whose columns are aggregates RMP recomputes and which
+        # no request path reads. Runs only after the workflow's scrape floors
+        # passed, so the CSV is known-good.
         if replace:
             if not os.path.exists(csv_path):
                 sys.exit(f"--replace: {csv_path} missing; refusing to truncate {table_name}")

@@ -1,0 +1,147 @@
+"""Delete rmp_reviews rows that no longer exist on RateMyProfessors.
+
+migrate_to_crdb.py inserts with ON CONFLICT DO NOTHING and never deletes, so a
+review removed on RMP stayed in the table and kept rendering — while the count
+beside it, which precompute derives from the fresh CSV, had already dropped.
+The list and the number described different sets.
+
+Truncate-and-reload also converges, but it regenerates every rmp_reviews.id,
+and evidence.source_ref for RMP *is* that rowid
+(scraper/load_evidence_to_crdb.py:208) — so each full replace orphans the RMP
+half of the RAG corpus and forces a re-embed. It also leaves the table empty
+mid-load, because the TRUNCATE commits by itself. Pruning deletes only the rows
+that actually went away, weekly, and leaves ids alone.
+
+Runs between the RMP load and precompute, so the reviews and the counts
+precompute writes describe the same set.
+
+Match key is (professor_name, course, date), not the 4-column unique
+constraint: comparing comment text would mean reading all ~16MB of it back each
+week, and RMP gives students no way to edit a posted rating — only moderation
+removes one. Rows sharing a key therefore survive together, which under-prunes
+rather than over-prunes.
+
+Usage:
+    python prune_rmp_reviews.py [--csv PATH] [--dry-run] [--force]
+"""
+
+import argparse
+import csv
+import os
+import sys
+
+DEFAULT_CSV = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "Better_Scraper", "output_data", "rmp_reviews.csv",
+)
+
+# Rows per DELETE. Matches migrate_to_crdb.py's BATCH_SIZE rationale: stay
+# under CockroachDB's lock-tracking budget for a single statement.
+BATCH_SIZE = 5000
+
+# A prune bigger than this share of the table means the CSV is wrong, not that
+# RMP deleted a fifth of its reviews. The weekly delta is tens of rows.
+MAX_PRUNE_PCT = 5
+
+csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
+
+
+def csv_keys(csv_path):
+    """The (professor_name, course, date) keys present in the fresh CSV."""
+    keys = set()
+    with open(csv_path, "r", encoding="utf-8", errors="replace", newline="") as fh:
+        for row in csv.DictReader(fh):
+            keys.add((
+                row.get("professor_name") or "",
+                row.get("course") or "",
+                row.get("date") or "",
+            ))
+    return keys
+
+
+def stale_ids(db_rows, fresh_keys):
+    """Ids in `db_rows` whose key is absent from `fresh_keys`.
+
+    db_rows: (id, professor_name, course, date) tuples. NULL course/date are
+    normalised to "" to match the CSV, which writes empty strings.
+    """
+    stale = []
+    for row_id, name, course, date in db_rows:
+        key = (name or "", course or "", date or "")
+        if key not in fresh_keys:
+            stale.append(row_id)
+    return stale
+
+
+def prune(conn, csv_path, batch_size=BATCH_SIZE, dry_run=False, force=False):
+    """Delete rmp_reviews rows absent from `csv_path`. Returns stats."""
+    fresh = csv_keys(csv_path)
+    if not fresh:
+        sys.exit(
+            f"prune: {csv_path} yielded 0 keys; refusing to delete every row. "
+            "A header-only or truncated CSV means the scrape failed."
+        )
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, professor_name, course, date FROM rmp_reviews")
+        db_rows = cur.fetchall()
+
+    total = len(db_rows)
+    stale = stale_ids(db_rows, fresh)
+    print(f"  {total} rows in table, {len(fresh)} keys in CSV, {len(stale)} stale")
+
+    if stale and not force:
+        pct = len(stale) * 100.0 / total if total else 0.0
+        if pct > MAX_PRUNE_PCT:
+            sys.exit(
+                f"prune: {len(stale)} of {total} rows ({pct:.1f}%) would be "
+                f"deleted, over the {MAX_PRUNE_PCT}% ceiling. Investigate the "
+                "CSV, then re-run with --force if the drop is real."
+            )
+
+    if dry_run:
+        print(f"  Dry run — {len(stale)} rows left in place")
+        return {"total": total, "stale": len(stale), "deleted": 0}
+
+    deleted = 0
+    for start in range(0, len(stale), batch_size):
+        batch = stale[start:start + batch_size]
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM rmp_reviews WHERE id = ANY(%s)", (batch,))
+        conn.commit()
+        deleted += len(batch)
+        print(f"  Deleted {deleted}/{len(stale)}...", end="\r")
+
+    if deleted:
+        print(f"  Deleted {deleted} stale reviews")
+    else:
+        print("  Nothing to prune")
+    return {"total": total, "stale": len(stale), "deleted": deleted}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--csv", default=DEFAULT_CSV, help="Fresh rmp_reviews.csv")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Report what would be deleted, delete nothing")
+    parser.add_argument("--force", action="store_true",
+                        help=f"Allow a prune over {MAX_PRUNE_PCT}% of the table")
+    args = parser.parse_args(argv)
+
+    if not os.path.exists(args.csv):
+        sys.exit(f"prune: {args.csv} not found; refusing to touch rmp_reviews.")
+
+    # Imported here so the pure functions above stay testable without psycopg2
+    # and without the module reading DATABASE_URL at import time.
+    from migrate_to_crdb import get_connection
+
+    conn = get_connection()
+    try:
+        prune(conn, args.csv, dry_run=args.dry_run, force=args.force)
+    finally:
+        conn.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
