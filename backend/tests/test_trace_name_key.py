@@ -547,3 +547,183 @@ def test_trace_evidence_still_builds_for_an_exactly_matched_professor():
     rows = build_trace_rows(_evidence_db(None, RMP_KEY))
     assert len(rows) == 1
     assert rows[0]["professor_slug"] == "dan-koloski"
+
+
+# ── the RMP half of the same join ───────────────────────────────────────────
+#
+# build_rmp_rows validates a review's course code against the courses TRACE says
+# the professor taught, so a review claiming a course they never ran loses its
+# attribution. `taught` is keyed on trace_courses.name_key (the TRACE spelling)
+# but looked up with rmp_reviews.name_key (the RMP spelling), so for a
+# fuzzy-matched professor the set is always empty and *every* one of their RMP
+# reviews is stripped of its course — the validation silently becomes a reject-all.
+
+
+def _rmp_db(trace_name_key, course_key):
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.executescript("""
+        CREATE TABLE professors_catalog (name_key TEXT, slug TEXT, trace_name_key TEXT);
+        CREATE TABLE trace_courses (name_key TEXT, course_code TEXT);
+        CREATE TABLE rmp_reviews (id INT, name_key TEXT, course TEXT, comment TEXT,
+                                  quality INT, difficulty INT, tags TEXT, grade TEXT);
+    """)
+    db.execute("INSERT INTO professors_catalog VALUES (?,?,?)",
+               (RMP_KEY, "dan-koloski", trace_name_key))
+    db.execute("INSERT INTO trace_courses VALUES (?,?)", (course_key, "ANLY6500"))
+
+    def query_fn(sql, params=()):
+        cur = db.execute(sql, params)
+        return [dict(r) for r in cur.fetchall()] if cur.description else []
+
+    return query_fn, db
+
+
+def _add_review(db, course):
+    db.execute("INSERT INTO rmp_reviews VALUES (1,?,?,?,4,3,'','A')",
+               (RMP_KEY, course,
+                "The lectures were genuinely well organised and the feedback was useful."))
+
+
+def test_rmp_course_code_survives_the_rmp_trace_name_difference():
+    from load_evidence_to_crdb import build_rmp_rows
+    query_fn, db = _rmp_db(TRACE_NAME, TRACE_NAME)
+    _add_review(db, "ANLY6500")
+    rows = build_rmp_rows(query_fn)
+    assert len(rows) == 1
+    assert rows[0]["course_code"] == "ANLY6500", \
+        "course attribution must survive the RMP/TRACE name difference"
+
+
+def test_rmp_course_code_is_still_rejected_when_not_taught():
+    """The validation has to stay a validation, not become a pass-through."""
+    from load_evidence_to_crdb import build_rmp_rows
+    query_fn, db = _rmp_db(TRACE_NAME, TRACE_NAME)
+    _add_review(db, "PHIL1000")
+    rows = build_rmp_rows(query_fn)
+    assert rows[0]["course_code"] == "", "a course TRACE has no record of was attributed"
+
+
+def test_rmp_course_code_still_validates_for_an_exact_match():
+    from load_evidence_to_crdb import build_rmp_rows
+    query_fn, db = _rmp_db(None, RMP_KEY)
+    _add_review(db, "ANLY6500")
+    rows = build_rmp_rows(query_fn)
+    assert rows[0]["course_code"] == "ANLY6500"
+
+
+# ── a fuzzy match must not also leave a TRACE-only row ──────────────────────
+#
+# attach_fuzzy_trace copies the TRACE scores onto the RMP row and records which
+# TRACE name it took them from. The TRACE-only pass then has to know that name is
+# spoken for. It only ever checked the RMP name_keys, so every fuzzy match left a
+# second catalog row behind — "dan koloski" (blended) beside "daniel koloski"
+# (TRACE-only), different slugs so nothing collided, both carrying the same TRACE
+# reviews and both eligible for a GOATED slot.
+
+
+def test_a_fuzzy_matched_trace_name_is_absorbed():
+    from precompute import absorbed_trace_key
+    assert absorbed_trace_key(TRACE_NAME, {RMP_KEY}, {TRACE_NAME})
+
+
+def test_an_exactly_matched_name_is_absorbed_by_the_rmp_key():
+    from precompute import absorbed_trace_key
+    assert absorbed_trace_key("jane doe", {"jane doe"}, set())
+
+
+def test_an_unmatched_trace_professor_still_gets_their_own_row():
+    """The guard must not swallow genuine TRACE-only professors."""
+    from precompute import absorbed_trace_key
+    assert not absorbed_trace_key("someone else", {RMP_KEY}, {TRACE_NAME})
+
+
+def test_the_catalog_build_feeds_the_guard_the_fuzzy_names():
+    """The helper is only worth anything if main() collects _trace_name_key.
+
+    Pinned at the source because the catalog build is inline in main() and has no
+    seam to call — and a correct helper wired to an empty set is the bug intact.
+    """
+    src = PRECOMPUTE_PY.read_text()
+    assert "absorbed_trace_key(" in src, "the TRACE-only loop does not use the guard"
+    assert "_trace_name_key" in src.split("# TRACE-only professors")[0], \
+        "fuzzy_trace_keys is never populated from _trace_name_key"
+
+
+# ── the ghost-rating guard ──────────────────────────────────────────────────
+#
+# A catalog row that displays a TRACE rating whose key matches no trace_courses
+# row is a "ghost": the number renders, and every TRACE panel behind it — course
+# list, comments, distribution — comes back empty. That is exactly what a fuzzy
+# match with no trace_name_key produced, and what a duplicate TRACE-only row
+# produces. The detector and the bug were removed together, so nothing has been
+# watching for it.
+#
+# In-memory and run *before* the old catalog is dropped, so it can still refuse
+# the rebuild. A post-write SQL count can only report a live site already wrong.
+
+from precompute import CATALOG_COLUMNS, unreachable_trace_rows  # noqa: E402
+
+
+def _catalog_row(**fields):
+    row = [None] * len(CATALOG_COLUMNS)
+    for k, v in fields.items():
+        row[CATALOG_COLUMNS.index(k)] = v
+    return tuple(row)
+
+
+def test_catalog_columns_match_the_insert():
+    """The guard indexes positionally, so drift here reads the wrong column."""
+    assert list(CATALOG_COLUMNS) == _insert_columns()
+
+
+def test_a_rating_with_no_trace_rows_behind_it_is_reported():
+    rows = [_catalog_row(name_key=RMP_KEY, trace_name_key=None, trace_rating=4.3)]
+    assert unreachable_trace_rows(rows, {TRACE_NAME}) == [(RMP_KEY, RMP_KEY)]
+
+
+def test_a_fuzzy_matched_row_resolves_through_trace_name_key():
+    rows = [_catalog_row(name_key=RMP_KEY, trace_name_key=TRACE_NAME, trace_rating=4.3)]
+    assert unreachable_trace_rows(rows, {TRACE_NAME}) == []
+
+
+def test_an_exact_match_falls_back_to_name_key():
+    rows = [_catalog_row(name_key="jane doe", trace_name_key=None, trace_rating=4.0)]
+    assert unreachable_trace_rows(rows, {"jane doe"}) == []
+
+
+def test_a_row_with_no_trace_rating_is_not_a_ghost():
+    """An RMP-only professor legitimately has no TRACE rows."""
+    rows = [_catalog_row(name_key=RMP_KEY, trace_name_key=None, trace_rating=None)]
+    assert unreachable_trace_rows(rows, set()) == []
+
+
+def test_the_rebuild_calls_the_ghost_guard():
+    """A guard nothing calls is not a guard.
+
+    Matched as a Call node, not a substring: the function's own `def` line
+    contains its name, so a text search passes on a module that never runs it.
+    """
+    import ast
+    tree = ast.parse(PRECOMPUTE_PY.read_text())
+    calls = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+             and n.func.id == "unreachable_trace_rows"]
+    assert calls, "the rebuild never calls unreachable_trace_rows"
+
+
+# ── the two aliases no automatic rule can recover ───────────────────────────
+
+def test_the_two_peter_xus_stay_separate_people():
+    """Same surname, same department, both teaching a 2301 supply-chain course.
+
+    attach_fuzzy_trace needs a shared first-token prefix and neither pair has
+    one ("peter" vs "peng", "peter" vs "xun"), so these cannot be rediscovered —
+    they are the residue that has to be written down. Collapsing them would merge
+    two people's ratings; the review dates alone rule it out, since Peng's start
+    in 2023 and Xun has no sections before Spring 2025.
+    """
+    from prof_aliases import ALIAS_MAP
+    assert ALIAS_MAP.get("peter xu") == "peng xu"
+    assert ALIAS_MAP.get("peter (xun) xu") == "xun xu"
+    assert ALIAS_MAP["peter xu"] != ALIAS_MAP["peter (xun) xu"]

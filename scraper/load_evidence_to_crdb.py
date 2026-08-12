@@ -188,9 +188,19 @@ def build_reddit_rows(query_fn) -> list:
 
 def build_rmp_rows(query_fn) -> list:
     """Yield evidence rows from rmp_reviews, resolving course_code via TRACE validation."""
-    slug_by_key = {r["name_key"]: r["slug"]
-                   for r in query_fn("SELECT name_key, slug FROM professors_catalog", ())}
-    taught = {}  # name_key -> set(course_code) from TRACE
+    catalog = query_fn(
+        "SELECT name_key, slug, trace_name_key FROM professors_catalog", ())
+    slug_by_key = {r["name_key"]: r["slug"] for r in catalog}
+    # RMP name_key -> the name TRACE files this professor's courses under. For a
+    # fuzzy-matched professor the two spellings differ, and `taught` below is
+    # keyed on TRACE's — so looking it up with the RMP key found nothing and the
+    # validation stopped being a validation: it stripped the course from every
+    # one of their reviews instead of only the ones TRACE cannot vouch for.
+    # NULL means no fuzzy match, so fall back to the RMP key. Same rule as
+    # professor_full.trace_key and the trace join below.
+    trace_key_by_key = {r["name_key"]: (r.get("trace_name_key") or r["name_key"])
+                        for r in catalog}
+    taught = {}  # TRACE name_key -> set(course_code) from TRACE
     for r in query_fn("SELECT DISTINCT name_key, course_code FROM trace_courses", ()):
         nk = r.get("name_key")
         code = norm_code(r.get("course_code", ""))
@@ -213,7 +223,8 @@ def build_rmp_rows(query_fn) -> list:
         if is_denied_key(r.get("name_key")):
             continue
         code = norm_code(r.get("course"))
-        prof_codes = taught.get(r.get("name_key"), set())
+        nk = r.get("name_key")
+        prof_codes = taught.get(trace_key_by_key.get(nk, nk), set())
         course_code = code if code in prof_codes else None
         meta = {
             "course": r.get("course"),

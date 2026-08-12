@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 
 import csv_store
 from denylist import denied_hashes, is_denied_key
+from term_order import term_sort_key
 
 load_dotenv()
 
@@ -54,6 +55,26 @@ def normalize_name(name):
 
 def name_to_slug(name):
     return re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+
+
+# The section is optional and need not be numeric. Requiring `:\d+` drops 10,405
+# rows of the 2026-08-11 export and 186 course codes entirely — an alphanumeric
+# section ("IE7215:V35") and the section-less Law/Fall-2015 shape ("LAW7651 (…)")
+# are both ordinary, and a code that parses nowhere gets no course page at all.
+DISPLAY_NAME_RE = re.compile(r"^([A-Za-z]+\d+)(?::\S+)?\s+\((.+?)\)")
+COURSE_CODE_RE = re.compile(r"^([A-Za-z]+\d+)")
+
+
+def course_code_from_display_name(display_name):
+    """Leading course code from a display_name, uppercased. "" when absent."""
+    m = COURSE_CODE_RE.match(str(display_name or "").strip())
+    return m.group(1).upper() if m else ""
+
+
+def parse_display_name(display_name):
+    """(code, title) from a display_name, or (None, None) if it does not parse."""
+    m = DISPLAY_NAME_RE.match(str(display_name or "").strip())
+    return (m.group(1).upper(), m.group(2).strip()) if m else (None, None)
 
 
 def upgrade_image_url(url):
@@ -312,6 +333,57 @@ def _has_unrelated_titles(titles):
                for i in range(len(titles)) for j in range(i + 1, len(titles)))
 
 
+def build_course_rows(records):
+    """course_catalog rows from (display_name, term_title, department_name) triples.
+
+    Returns (code, name, department, search_text, is_topics) tuples, one per code.
+
+    Title and department come from the most recent term the course ran, tie-broken
+    alphabetically, rather than from whichever row the frame happened to hold
+    first: hundreds of codes carry more than one title across terms, and a
+    drop_duplicates() pick is decided by CSV order — so the course page's title
+    moved when the export's row order did.
+
+    search_text keeps every historical title, not just the current one. It is
+    what server.py's course search matches against, and a student who took
+    ME2350 as "Statics" searches for "Statics", not for its current title.
+
+    is_topics marks a code that ran under more than one *unrelated* title within
+    a single term — HONR3310 as "Election 2024" and "Language and Power" at once.
+    Those are container codes for unrelated classes, so a single course-level
+    average mixes them and callers suppress it. Titles differing only in how they
+    are written are one course; see titles_are_variants.
+    """
+    titles = {}       # code -> {(term_sort, title)}
+    departments = {}  # code -> {(term_sort, department)}
+    per_term = {}     # code -> term_title -> {title}
+
+    for display_name, term_title, department_name in records:
+        code, title = parse_display_name(display_name)
+        if not code:
+            continue
+        tsort = term_sort_key(str(term_title or ""))
+        titles.setdefault(code, set()).add((tsort, title))
+        dept = "" if department_name is None else str(department_name).strip()
+        if dept and dept.lower() != "nan":
+            departments.setdefault(code, set()).add((tsort, dept))
+        per_term.setdefault(code, {}).setdefault(str(term_title or ""), set()).add(title)
+
+    def newest(candidates):
+        # Highest term first, then alphabetical, so the pick is stable run to run.
+        return sorted(candidates, key=lambda c: (-c[0], c[1]))[0][1]
+
+    rows = []
+    for code in sorted(titles):
+        name = newest(titles[code])
+        department = newest(departments[code]) if code in departments else ""
+        is_topics = any(_has_unrelated_titles(v) for v in per_term[code].values())
+        all_titles = sorted({t for _, t in titles[code]}, key=str.lower)
+        search_text = " ".join([code.lower()] + [t.lower() for t in all_titles])
+        rows.append((code, name, department, search_text, is_topics))
+    return rows
+
+
 def apply_counted_num_ratings(rmp_profs, review_keys):
     """Replace RMP's numRatings counter with the ratings we actually hold.
 
@@ -475,6 +547,59 @@ def catalog_comment_count(name_key, trace_name_key, rmp_counts, trace_counts):
     """
     return (int(rmp_counts.get(name_key, 0))
             + int(trace_counts.get(trace_name_key or name_key, 0)))
+
+
+# professors_catalog column order, mirroring the INSERT in main(). The ghost
+# guard below indexes positionally and cannot read a name, so the two are pinned
+# together by test_trace_name_key.test_catalog_columns_match_the_insert.
+CATALOG_COLUMNS = (
+    "slug", "name", "name_key", "department", "college", "avg_rating",
+    "rmp_rating", "trace_rating", "num_ratings", "trace_reviews",
+    "total_reviews", "would_take_again_pct", "difficulty", "professor_url",
+    "image_url", "focus_x", "focus_y", "avg_hours", "total_comments",
+    "trace_name_key",
+)
+_CATALOG_IDX = {c: i for i, c in enumerate(CATALOG_COLUMNS)}
+
+
+def unreachable_trace_rows(catalog_rows, trace_keys):
+    """Catalog rows whose displayed TRACE rating points at a name TRACE doesn't have.
+
+    A "ghost": the rating renders on the professor page while every TRACE panel
+    behind it — course list, comments, rating distribution — resolves to nothing,
+    because they all join on COALESCE(trace_name_key, name_key) and that key
+    matches no trace_courses row.
+
+    Run in memory *before* the old catalog is dropped, so the rebuild can still
+    be refused. A count taken after the swap can only report a live site that is
+    already wrong.
+    """
+    trace_rating_at = _CATALOG_IDX["trace_rating"]
+    name_key_at = _CATALOG_IDX["name_key"]
+    trace_name_key_at = _CATALOG_IDX["trace_name_key"]
+    bad = []
+    for row in catalog_rows:
+        if row[trace_rating_at] is None:
+            continue
+        key = row[trace_name_key_at] or row[name_key_at]
+        if key not in trace_keys:
+            bad.append((row[name_key_at], key))
+    return bad
+
+
+def absorbed_trace_key(nk, rmp_name_keys, fuzzy_trace_keys):
+    """True if a TRACE name already has a catalog row and must not get its own.
+
+    Two ways that happens:
+      - the RMP side uses the identical name_key (exact match), or
+      - an RMP row fuzzy-matched onto this TRACE name and copied its scores.
+
+    Only the first was checked before trace_name_key existed, so every fuzzy
+    match left a second catalog row behind: "dan koloski" (RMP + TRACE blended)
+    next to "daniel koloski" (TRACE-only) — different slugs, so nothing
+    collided, and both could occupy a GOATED slot with the same TRACE reviews.
+    """
+    return nk in rmp_name_keys or nk in fuzzy_trace_keys
 
 
 def apply_counted_rmp_rating(rmp_profs, review_keys, review_quality):
@@ -1062,6 +1187,10 @@ def main():
     # ── Build catalog rows ──
     catalog_rows = []
     rmp_name_keys = set(rmp_profs["_name_key"].values)
+    # TRACE names now owned by an RMP row (see absorbed_trace_key). Populated
+    # from the fuzzy match, whose whole job is to file one professor's two
+    # spellings under a single row — leaving this empty puts the second one back.
+    fuzzy_trace_keys = set(rmp_profs["_trace_name_key"].dropna().values)
     seen_slugs = set()
 
     for _, row in rmp_profs.iterrows():
@@ -1134,7 +1263,7 @@ def main():
     trace_unique = tc[["name_key", "department_name"]].drop_duplicates(subset=["name_key"])
     for _, row in trace_unique.iterrows():
         nk = row["name_key"]
-        if nk in rmp_name_keys:
+        if absorbed_trace_key(nk, rmp_name_keys, fuzzy_trace_keys):
             continue
         display_name = trace_name_lookup.get(nk, nk.title())
         dept = str(row["department_name"]) if pd.notna(row["department_name"]) else ""
@@ -1167,16 +1296,34 @@ def main():
 
     print(f"Built catalog with {len(catalog_rows)} professors")
 
+    # Refuse a rebuild that would publish ghost ratings — a TRACE rating whose
+    # key resolves to no trace_courses row, so the number renders and every
+    # TRACE panel behind it comes up empty. Checked here, in memory, because
+    # this is the last point at which the old catalog is still intact and the
+    # run can still decline to replace it.
+    #
+    # Set GHOST_TRACE_OK=1 to publish anyway, for the case where the drop is
+    # real and understood.
+    ghosts = unreachable_trace_rows(catalog_rows, set(tc["name_key"].unique()))
+    if ghosts:
+        preview = ", ".join(f"{nk} -> {key}" for nk, key in ghosts[:5])
+        msg = (f"{len(ghosts)} professors would show a TRACE rating with no TRACE "
+               f"rows behind it: {preview}"
+               + (" ..." if len(ghosts) > 5 else ""))
+        if os.getenv("GHOST_TRACE_OK") == "1":
+            print(f"WARNING: {msg} (GHOST_TRACE_OK=1, publishing anyway)")
+        else:
+            raise SystemExit(
+                f"ERROR: {msg}\n"
+                "The old catalog is untouched. Re-run with GHOST_TRACE_OK=1 if "
+                "this is expected.")
+
     # ── Build course catalog ──
-    def parse_course(dn):
-        m = re.match(r"^([A-Z]+\d+):\d+\s+\((.+?)\)", str(dn))
-        return (m.group(1), m.group(2)) if m else (None, None)
-
-    tc["_parsed"] = tc["display_name"].apply(parse_course)
-    tc["_code"] = tc["_parsed"].apply(lambda x: x[0])
-    tc["_cname"] = tc["_parsed"].apply(lambda x: x[1])
-    course_df = tc[tc["_code"].notna()][["_code", "_cname", "department_name"]].drop_duplicates(subset=["_code"])
-
+    # One function, pinned by test_course_catalog_build, rather than an inline
+    # regex: it decides the title, the department, the search text and the topics
+    # flag together, and each of those was got wrong independently when they were
+    # four expressions here. See its docstring for what each rule buys.
+    #
     # A topics code runs under more than one unrelated title *inside a single
     # term* — HONR3310 as "Election 2024", "Honors Seminar" and "Language and
     # Power" simultaneously. Averaging their TRACE scores produces a number that
@@ -1184,25 +1331,20 @@ def main():
     # AggregateRating JSON-LD keyed off it) for these codes. Within a term rather
     # than across all terms: a code whose title merely changed in 2019 is one
     # course that got renamed, not a container for unrelated ones.
-    per_term = {}
-    coded = tc[tc["_code"].notna()]
-    for code, term, title in zip(coded["_code"], coded["term_id"], coded["_cname"]):
-        per_term.setdefault(code, {}).setdefault(term, set()).add(title)
-    topics_codes = {code for code, terms in per_term.items()
-                    if any(_has_unrelated_titles(v) for v in terms.values())}
-    print(f"Flagged {len(topics_codes)} topics codes (multiple unrelated titles in one term)")
-
-    course_rows = [
-        (r["_code"], r["_cname"], str(r["department_name"]) if pd.notna(r["department_name"]) else "", r["_code"].lower() + " " + str(r["_cname"]).lower(), r["_code"] in topics_codes)
-        for _, r in course_df.iterrows()
-    ]
+    course_rows = build_course_rows(
+        zip(tc["display_name"], tc["term_title"], tc["department_name"]))
+    topics_count = sum(1 for r in course_rows if r[4])
+    print(f"Flagged {topics_count} topics codes (multiple unrelated titles in one term)")
 
     # ── Compute stats ──
     all_prof_names = set(rmp_profs["_name_key"].unique()) | set(tc["name_key"].unique())
     all_prof_names = {n.strip() for n in all_prof_names if isinstance(n, str) and n.strip()}
     stat_professors = len(all_prof_names)
-    tc["_course_code"] = tc["display_name"].astype(str).str.split(":").str[0]
-    stat_courses = tc["_course_code"].str.upper().nunique()
+    # Same extraction as the backfill, not a split on ':' — 3,819 rows carry no
+    # colon, and splitting counted each of their full display_names as its own
+    # distinct course, inflating the number shown on the homepage.
+    tc["_course_code"] = tc["display_name"].apply(course_code_from_display_name)
+    stat_courses = tc[tc["_course_code"] != ""]["_course_code"].nunique()
     stat_comments = len(rmp_reviews) + len(tcomments)
     stat_departments = tc["department_name"].str.lower().str.strip().nunique()
 
@@ -1370,11 +1512,23 @@ def main():
             conn.rollback()
             cur = conn.cursor()
 
+        # SPLIT_PART on ':' returned the entire display_name for the 3,819 rows
+        # that carry no section (Fall 2015 + the Law terms), so their course_code
+        # became "INTB1203INTLBUSANDSOCIALRESPIFFATKHAN" and the course page's
+        # `WHERE course_code = 'INTB1203'` never saw them. Extracting the leading
+        # code instead is format-independent — same rule as
+        # course_code_from_display_name, which test_course_catalog_build pins.
+        #
+        # Rewriting rows whose value merely disagrees, not only NULL ones: every
+        # row the SPLIT_PART version corrupted is non-NULL, so an IS NULL guard
+        # would leave them wrong permanently with no re-run able to repair them.
+        # Idempotent — after the first pass this matches nothing.
         cur.execute("""
-            UPDATE trace_courses SET course_code = UPPER(REGEXP_REPLACE(
-                SPLIT_PART(display_name, ':', 1), '[^A-Za-z0-9]', '', 'g'
-            ))
-            WHERE course_code IS NULL AND display_name IS NOT NULL
+            UPDATE trace_courses
+            SET course_code = UPPER(SUBSTRING(display_name, '^[A-Za-z]+[0-9]+'))
+            WHERE display_name IS NOT NULL
+              AND course_code IS DISTINCT FROM
+                  UPPER(SUBSTRING(display_name, '^[A-Za-z]+[0-9]+'))
         """)
         conn.commit()
 
