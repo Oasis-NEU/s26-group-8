@@ -390,8 +390,17 @@ class RMPSchool:
 
         return reviews, page_info.get("hasNextPage", False), page_info.get("endCursor")
 
-    def _fetch_reviews_for_professor(self, prof: Professor) -> List[Review]:
-        """Fetch all reviews for a single professor. Thread-safe."""
+    def _fetch_reviews_for_professor(self, prof: Professor) -> Tuple[List[Review], bool]:
+        """Fetch all reviews for a single professor. Thread-safe.
+
+        Returns (reviews, complete). `complete` is False only when pagination
+        stopped because a page request failed — the one case where the list is
+        short for a reason that a retry might fix.
+
+        Hitting MAX_REVIEW_PAGES or MAX_REVIEWS_PER_PROFESSOR is a deliberate cap
+        and counts as complete: retrying would truncate at the same place. So
+        does an empty page, which is how RMP ends a list.
+        """
         reviews: List[Review] = []
         cursor: Optional[str] = None
         has_next: bool = True
@@ -411,7 +420,13 @@ class RMPSchool:
             }
             data: Optional[Dict[str, Any]] = self._graphql_post(payload)
             if not data:
-                break
+                # Page N failed after pages 1..N-1 succeeded. Returning what we
+                # have as if it were the whole list is what let a professor lose
+                # 300 of 400 ratings silently: the corpus-wide floors in
+                # scrape_guard are 98% of ~44.5k rows, so one professor's loss is
+                # far inside the noise, and precompute then republishes the
+                # partial mean as their rating.
+                return reviews, False
 
             new_reviews, has_next, cursor = self._parse_ratings(data)
             reviews.extend(new_reviews)
@@ -422,7 +437,7 @@ class RMPSchool:
                 reviews = reviews[:MAX_REVIEWS_PER_PROFESSOR]
                 break
 
-        return reviews
+        return reviews, True
 
     def _scrape_all_reviews(self) -> None:
         profs_with_ratings: List[Professor] = [
@@ -447,19 +462,28 @@ class RMPSchool:
             for future in as_completed(futures):
                 prof: Professor = futures[future]
                 try:
-                    reviews: List[Review] = future.result()
+                    reviews, complete = future.result()
                     prof.reviews = reviews
-                    total_reviews += len(reviews)
+                    prof.reviews_complete = complete
                 except Exception:
-                    pass
+                    # An exception is not a complete fetch either, and this used
+                    # to leave reviews_complete at its True default.
+                    prof.reviews_complete = False
                 pbar.update(1)
 
         pbar.close()
 
-        # Second pass: retry failed professors with a small thread pool
-        failed_profs = [p for p in profs_with_ratings if not p.reviews]
+        # Second pass: retry professors whose fetch did not finish.
+        #
+        # "Did not finish" is not the same as "came back empty", which is what
+        # this used to retry. Both directions of that were wrong: it re-fetched
+        # hundreds of legitimately zero-review professors every run and reported
+        # them as failures, and it never retried a professor whose page 1
+        # succeeded and page 2 failed — the case that actually corrupts data,
+        # since precompute derives num_ratings and `rating` from these rows.
+        failed_profs = [p for p in profs_with_ratings if not p.reviews_complete]
         if failed_profs:
-            print(f"  Retrying {len(failed_profs)} failed professors...")
+            print(f"  Retrying {len(failed_profs)} incomplete professors...")
             with ThreadPoolExecutor(max_workers=5) as retry_executor:
                 retry_futures: Dict[Future, Professor] = {
                     retry_executor.submit(self._fetch_reviews_for_professor, prof): prof
@@ -468,20 +492,38 @@ class RMPSchool:
                 for future in tqdm(as_completed(retry_futures), total=len(failed_profs), desc="Retrying", unit=" prof"):
                     prof: Professor = retry_futures[future]
                     try:
-                        reviews: List[Review] = future.result()
-                        prof.reviews = reviews
-                        total_reviews += len(reviews)
+                        reviews, complete = future.result()
+                        # Keep whichever attempt saw more of the list. A retry
+                        # that truncates earlier than the first pass would
+                        # otherwise overwrite good rows with fewer.
+                        if complete or len(reviews) > len(prof.reviews):
+                            prof.reviews = reviews
+                            prof.reviews_complete = complete
                     except Exception:
                         pass
-            recovered = sum(1 for p in failed_profs if p.reviews)
+            recovered = sum(1 for p in failed_profs if p.reviews_complete)
             print(f"  Retry recovered {recovered}/{len(failed_profs)} professors")
 
-        profs_done: int = sum(1 for p in profs_with_ratings if p.reviews)
+        total_reviews = sum(len(p.reviews) for p in profs_with_ratings)
+        profs_done: int = sum(1 for p in profs_with_ratings if p.reviews_complete)
+        # Counted after both passes rather than accumulated during them: the
+        # running total double-counted every professor the retry pass touched,
+        # adding the retry's reviews on top of the first attempt's.
+        truncated = [p for p in profs_with_ratings if not p.reviews_complete]
         print(
             f"  ✓ Fetched {total_reviews} reviews from "
             f"{profs_done}/{total} professors"
-            + (f" ({total - profs_done} still failed)" if profs_done < total else "")
+            + (f" ({len(truncated)} still incomplete)" if truncated else "")
         )
+        if truncated:
+            # Named, not just counted. These are the professors whose stored
+            # rating and num_ratings will be computed from part of their reviews
+            # if this run is loaded, and no corpus-wide row-count floor can see
+            # a single professor losing most of theirs.
+            preview = ", ".join(str(p.name) for p in truncated[:10])
+            print(f"  ⚠ Incomplete review fetches (rating/num_ratings would be "
+                  f"computed from partial data): {preview}"
+                  + (f", +{len(truncated) - 10} more" if len(truncated) > 10 else ""))
 
     # ------------------------------------------------------------------
     # Export

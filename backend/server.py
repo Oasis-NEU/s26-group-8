@@ -36,7 +36,7 @@ from rag.chat_answer import generate, generate_course_list, generate_course_rank
 from professor_full import build_full, trace_key
 from rating_scale import (
     CALIBRATION_MIN_RMP, CALIBRATION_MIN_TRACE, FALLBACK_CALIBRATION,
-    fit_rma, project_rmp)
+    FALLBACK_VARIANCES, fit_rma, project_rmp, rmp_weight_per_rating)
 import bookmarks
 import usage_alert
 
@@ -681,12 +681,13 @@ def shrunk_score(avg_rating, total_reviews, prior_mean, m=SHRINKAGE_M):
 # filtered by num_ratings and trace_reviews, and professors_catalog stores all
 # four, so the same fit is available at request time.
 #
-# What this deliberately does NOT try to do is let a reader recompute the Avg.
-# The pooling weights are inverse-variance, not the rating counts — one RMP
+# What this deliberately does NOT try to do is let a reader recompute the Avg by
+# eye. The pooling weights are inverse-variance, not the rating counts — one RMP
 # rating carries ~1.88x the weight of one TRACE response (slope^2 * var_trace /
-# var_rmp) — and the per-response variances are measured from raw review rows
-# that the catalog does not carry. Showing the counts as if they were the weights
-# would replace one unreproducible sum with another. What the projected value
+# var_rmp, the scalar blend_params serves) — so showing the counts as if they
+# were the weights would replace one unreproducible sum with another. The
+# professor page's filtered card does pool client-side, but from that scalar
+# rather than from anything printed beside it. What the projected value
 # does buy is that the Avg always lies between the two numbers displayed above
 # it: true for all 1,708 two-source professors in the catalog, and inherent to
 # pooling, which cannot leave the interval its inputs span.
@@ -711,6 +712,90 @@ def rating_calibration(query_fn):
     return FALLBACK_CALIBRATION if fit is None else fit
 
 
+def response_variances(query_fn):
+    """(var_rmp, var_trace) as precompute measured them. Never returns None.
+
+    Unlike the calibration above these are not refit here: they are pooled
+    within-professor over raw rmp_reviews rows and TRACE count_1..5, which is a
+    precompute-sized scan. precompute writes them to rating_meta; a missing table
+    (a catalog built before this existed) or a missing row degrades to the
+    measured fallback rather than failing the page.
+
+    The rollback is not optional. The pooled connection is request-scoped and not
+    autocommit, so a failed statement aborts the transaction and every later
+    query in the same request dies with InFailedSqlTransaction — a missing
+    rating_meta would 500 the whole professor page rather than falling back to a
+    constant, which is the opposite of degrading gracefully.
+    """
+    try:
+        rows = query_fn("SELECT key, value FROM rating_meta "
+                        "WHERE key IN ('var_rmp', 'var_trace')")
+    except Exception:
+        try:
+            get_db().rollback()
+        except Exception:
+            _discard_db_conn()
+        return FALLBACK_VARIANCES
+    vals = {r["key"]: r["value"] for r in rows if r["value"] is not None}
+    var_rmp, var_trace = vals.get("var_rmp"), vals.get("var_trace")
+    if not var_rmp or not var_trace or var_rmp <= 0 or var_trace <= 0:
+        return FALLBACK_VARIANCES
+    return float(var_rmp), float(var_trace)
+
+
+def blend_params(query_fn, calibration=None):
+    """What a client needs to pool a *subset* of one professor's ratings.
+
+    The professor page lets a reader filter to a course selection, and the card
+    has to keep answering with the same rule avg_rating was built by. It cannot
+    read avg_rating for that — the column describes the whole professor — and it
+    cannot round-trip per checkbox, so the parameters come down with the payload
+    and the pooling happens client-side in lib/ratingBlend.ts.
+
+    Three numbers is the whole of it: the calibration pair to project RMP onto
+    the TRACE scale, and one scalar for how much an RMP rating weighs against a
+    TRACE response. See rating_scale.rmp_weight_per_rating for why the two
+    variances collapse to one number — it is what keeps this from shipping the
+    variance machinery to the browser.
+
+    `calibration` is a parameter so a caller that already fitted it for
+    rmpAdjusted does not scan the catalog twice for the same payload — and, more
+    to the point, cannot serve a projected value fitted separately from the
+    parameters a client will project with.
+    """
+    if calibration is None:
+        calibration = rating_calibration(query_fn)
+    slope, intercept = calibration
+    return {
+        "slope": round(slope, 6),
+        "intercept": round(intercept, 6),
+        "rmpWeightPerRating": round(
+            rmp_weight_per_rating(calibration, response_variances(query_fn)), 6),
+    }
+
+
+def _rating_blend_fields(prof):
+    """The two rating-scale fields every professor payload carries, or nothing.
+
+    `rmpAdjusted` is the projected RMP value the blend was computed from, on the
+    same terms as the leaderboard tooltip: two-source professors only, because
+    for an RMP-only professor avgRating already *is* that number and labelling it
+    twice would imply a pooling that never happened.
+
+    `ratingBlend` goes to any professor with RMP data, two-source or not, since
+    the filtered card has to project a course-subset RMP mean in both cases. A
+    TRACE-only professor needs neither — every subset of their evidence is
+    already on the TRACE scale — so they pay for no calibration fit.
+    """
+    if prof["rmp_rating"] is None:
+        return {}
+    calibration = rating_calibration(query)
+    fields = {"ratingBlend": blend_params(query, calibration)}
+    if prof["trace_rating"] is not None:
+        fields["rmpAdjusted"] = round(project_rmp(prof["rmp_rating"], calibration), 2)
+    return fields
+
+
 @app.route("/api/goat-professors")
 def goat_professors():
     college = request.args.get("college", "Khoury")
@@ -732,12 +817,16 @@ def goat_professors():
     prior = ranking_prior(query_one)
     # `name` breaks ties last. Without it, professors equal on both score and
     # review count come back in whatever order the scan produces, so the board
-    # could reshuffle between requests. Measured after the total_reviews rebuild:
-    # 59 such groups across the catalog covering 127 professors, none in Law
-    # (the new counts broke every tie it used to have) and none reaching a top
-    # 10. So this closes the door rather than fixing a visible bug — but don't
-    # read the "none in a top 10" part as permanent: tie groups move whenever
-    # total_reviews is recomputed, which is exactly what happened to Law's.
+    # could reshuffle between requests. Measured on the current corpus:
+    # 64 such groups across the catalog, covering 137 professors, and none
+    # reaching a top 10. So this closes the door rather than fixing a visible bug.
+    #
+    # Which colleges hold them is not worth stating: an earlier version of this
+    # comment said "none in Law", Law acquired one on the next refresh, and the
+    # test guarding the claim went red on data drift alone. Tie groups move
+    # whenever total_reviews is recomputed. The durable property is the one
+    # test_measured_claims checks — that no tie reaches a board's top 10, which
+    # is the only place the ordering is visible.
     rows = query(f"""
         SELECT * FROM professors_catalog
         WHERE college = %s AND total_reviews >= %s
@@ -1096,6 +1185,7 @@ def professor_profile(slug):
         "focusY": prof.get("focus_y") if prof.get("focus_y") is not None else 30.0,
         "hoursPerWeek": round(prof["avg_hours"], 1) if prof["avg_hours"] else None,
     }
+    profile.update(_rating_blend_fields(prof))
 
     # ── TRACE courses + scores ──
     # Authenticated: full scores. Unauthenticated: metadata + precomputed traceAvgDifficulty only.
@@ -1612,7 +1702,8 @@ def professor_full(slug):
     if not is_authed:
         profile_data = build_full(slug, query, query_one, sanitize,
                                   fetch_reddit_mentions=fetch_reddit_mentions,
-                                  is_authed=False)
+                                  is_authed=False,
+                                  blend_fields=_rating_blend_fields)
         if profile_data is None:
             return jsonify({"error": "Professor not found"}), 404
         # Same colleagues field the authed branch gets via professor_profile —

@@ -1,0 +1,10 @@
+# Professors who have asked that their data not be published.
+#
+# sha256 of the normalized, alias-resolved name key. Hashed because this repo is
+# public and a plaintext list would publish the very association it exists to
+# suppress. See denylist.py for what that does and does not protect.
+#
+# Managed with:  python denylist.py add "<name>" --note "<date> <ref>"
+# Do not edit by hand; the hash must match name_key() exactly or it will not fire.
+#
+a35a9c8398d9aefe94e5b4b6c8ead54821f17d4e6aad7014af25ed125b789a4e  # 2026-08-11 data deletion request (feedback@)

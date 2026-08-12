@@ -97,8 +97,21 @@ def parse_sql_values(body: str) -> List[List[Optional[str]]]:
                 continue
             # not in string
             if c == "'":
+                # Whitespace between the comma and the opening quote is
+                # formatting, not data. It used to land in `chars` and then
+                # survive, because a quoted token is deliberately not stripped
+                # (a trailing space inside quotes is real): "(1, 'ada')" parsed
+                # as " ada". Harmless in a CockroachDB backup, which emits no
+                # space after the comma — and silent in anything that does, since
+                # a slug or name_key with a leading space simply matches nothing.
+                if not "".join(chars).strip():
+                    chars = []
                 in_str = True
                 was_quoted = True
+                i += 1
+                continue
+            # Same, on the closing side: "('ada' , 1)".
+            if was_quoted and not in_str and c.isspace():
                 i += 1
                 continue
             if c in (",", ")"):
@@ -160,13 +173,45 @@ class Professor:
         return parts[-1] if parts else ""
 
 
-# Column order from CREATE TABLE professors_catalog in the backup.
+# Column order from CREATE TABLE professors_catalog in the backup. Only a
+# fallback: _catalog_index prefers the column list the INSERT statement carries,
+# because this constant drifted from the real table and read the wrong fields for
+# as long as nobody checked. focus_x/focus_y were added to the table between
+# image_url and avg_hours and never added here, so total_comments was reading
+# focus_y — a focus coordinate, ~30 for every professor.
 _CATALOG_COLS = [
     "slug", "name", "name_key", "department", "college", "avg_rating",
     "rmp_rating", "trace_rating", "num_ratings", "trace_reviews",
     "total_reviews", "would_take_again_pct", "difficulty", "professor_url",
-    "image_url", "avg_hours", "total_comments",
+    "image_url", "focus_x", "focus_y", "avg_hours", "total_comments",
+    "trace_name_key",
 ]
+
+# Only these are read out of a row; a backup missing any of them is unusable.
+_CATALOG_REQUIRED = ("slug", "name", "name_key", "department", "college",
+                     "num_ratings", "total_reviews", "total_comments")
+
+
+def _catalog_index(stmt: str) -> Optional[Dict[str, int]]:
+    """Column name -> position, from the INSERT's own column list when it has one.
+
+    `INSERT INTO professors_catalog (slug, name, ...) VALUES (...)` names its
+    columns, and taking the order from there rather than from _CATALOG_COLS is
+    what makes this survive a schema change: precompute appends new columns to
+    the end of the table specifically because this reader was positional, and a
+    column inserted mid-table would silently shift every field after it.
+
+    Returns None when the statement lists no columns, leaving the caller on the
+    hardcoded fallback.
+    """
+    m = re.match(r"INSERT INTO professors_catalog\s*\(([^)]*)\)", stmt)
+    if not m:
+        return None
+    cols = [c.strip().strip('"').strip() for c in m.group(1).split(",")]
+    cols = [c for c in cols if c]
+    if not cols:
+        return None
+    return {c: i for i, c in enumerate(cols)}
 
 
 def _to_int(v: Optional[str]) -> int:
@@ -182,8 +227,11 @@ def load_catalog(backup_path: str) -> List[Professor]:
     Reads every `INSERT INTO professors_catalog (...) VALUES ...;` statement and
     parses its rows. name_key is already alias-merged/canonical in this table,
     so no ALIAS_MAP is applied here.
+
+    Column positions come from each statement's own column list where it has one,
+    and only fall back to _CATALOG_COLS otherwise — see _catalog_index.
     """
-    idx = {c: i for i, c in enumerate(_CATALOG_COLS)}
+    fallback_idx = {c: i for i, c in enumerate(_CATALOG_COLS)}
     profs: List[Professor] = []
     skipped = 0
     with gzip.open(backup_path, "rt", encoding="utf-8", errors="replace") as f:
@@ -205,8 +253,18 @@ def load_catalog(backup_path: str) -> List[Professor]:
                     buf = []
                     continue
                 body = stmt[vpos + len(" VALUES"):].rstrip().rstrip(";")
+                idx = _catalog_index(stmt) or fallback_idx
+                missing = [c for c in _CATALOG_REQUIRED if c not in idx]
+                if missing:
+                    raise ValueError(
+                        f"professors_catalog backup is missing {missing}; "
+                        "load_catalog reads these by name and cannot guess them")
+                # Every column this reads has to be present in the row, not just
+                # most of them — a short row used to be accepted whenever it
+                # cleared the length of a constant that was itself wrong.
+                width = max(idx[c] for c in _CATALOG_REQUIRED) + 1
                 for row in parse_sql_values(body):
-                    if len(row) < len(_CATALOG_COLS):
+                    if len(row) < width:
                         skipped += 1
                         continue
                     profs.append(Professor(

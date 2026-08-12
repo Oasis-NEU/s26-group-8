@@ -144,14 +144,40 @@
   padding: 8px 12px;
   border-radius: 6px;
   font-size: 0.8rem !important;
+  /* Column, not the row this used to be: the panel now carries an explanatory
+     note under the figures, and a note is a paragraph — it has to wrap, so the
+     nowrap that kept "RMP: x  TRACE: y" on one line moved down to the row of
+     figures alone. */
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  align-items: flex-start;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s, transform 0.2s;
-  white-space: nowrap;
   box-shadow: 0 4px 12px rgba(0,0,0,0.15);
   z-index: 10;
+}
+.prof-stat-breakdown-rows {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  white-space: nowrap;
+}
+.prof-stat-breakdown-sub {
+  padding-left: 10px;
+  font-size: 0.76rem;
+  opacity: 0.75;
+}
+.prof-stat-breakdown-note {
+  margin-top: 6px;
+  /* Matches .tooltip-note on the leaderboard, which carries the same sentences:
+     the two panels should wrap them the same way rather than at two widths. */
+  max-width: 232px;
+  font-size: 0.7rem;
+  line-height: 1.3;
+  opacity: 0.72;
+  white-space: normal;
+  text-align: left;
 }
 .prof-stat-breakdown::before {
   content: '';

@@ -24,6 +24,12 @@ import math
 # there is no neutral choice, since identity would assert the scales match.
 FALLBACK_CALIBRATION = (2.38, -6.83)
 
+# Per-response variance: (RMP, TRACE). Measured on each source's own scale, so
+# they are not comparable as a ratio until slope^2 converts RMP's — see
+# rmp_weight_per_rating. Used when precompute could not measure them, and as the
+# fallback server.py serves when the rating_meta row is missing.
+FALLBACK_VARIANCES = (1.644, 0.534)
+
 # What counts as well-evidenced enough to inform the fit. Thin samples on either
 # side are mostly noise, and including them flattens the slope toward zero, which
 # understates how much wider the RMP scale is.
@@ -98,3 +104,47 @@ def project_rmp(rmp_rating, calibration):
         return None
     slope, intercept = calibration
     return min(max((float(rmp_rating) - intercept) / slope, RATING_MIN), RATING_MAX)
+
+
+def rmp_weight_per_rating(calibration, variances):
+    """How much one RMP rating weighs against one TRACE response. ~1.88 measured.
+
+    The whole of what an inverse-variance pool needs beyond the two means and
+    their two counts. `w_rmp = n_rmp * slope^2 / var_rmp` and `w_trace = n_trace
+    / var_trace` (precompute.blend_ratings), and a weighted mean is unchanged by
+    scaling both weights, so multiplying through by var_trace leaves one number:
+    slope^2 * var_trace / var_rmp.
+
+    Reducing it to a scalar is what lets the professor page pool a course-filtered
+    subset without shipping the per-response variances, which are measured from
+    raw review rows no client has and no served table carries.
+    """
+    slope, _ = calibration
+    var_rmp, var_trace = variances
+    return slope ** 2 * var_trace / var_rmp
+
+
+def pool_ratings(rmp_rating, n_rmp, trace_rating, n_trace, calibration, weight):
+    """Inverse-variance pool of one professor's two sources, on the TRACE scale.
+
+    `weight` is rmp_weight_per_rating's scalar. The scalar twin of
+    precompute.blend_ratings, which stays vectorised over numpy for the batch
+    path — test_rating_blend pins the two together, and frontend/src/lib/
+    ratingBlend.ts mirrors this function for the course-filtered card.
+
+    Either side may be None (a course selection can hold RMP ratings and no TRACE
+    responses, or the reverse), in which case the other source is returned on the
+    TRACE scale — projected, for RMP, matching what apply_blended_rating writes
+    for a single-source professor. Returns None when neither side has evidence.
+    """
+    has_rmp = rmp_rating is not None and n_rmp > 0
+    has_trace = trace_rating is not None and n_trace > 0
+    if not has_rmp and not has_trace:
+        return None
+    if not has_trace:
+        return project_rmp(rmp_rating, calibration)
+    if not has_rmp:
+        return float(trace_rating)
+    w_rmp = n_rmp * weight
+    return ((w_rmp * project_rmp(rmp_rating, calibration) + n_trace * float(trace_rating))
+            / (w_rmp + n_trace))

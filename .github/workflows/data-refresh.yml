@@ -13,12 +13,8 @@ on:
         description: "Skip the relative (vs last week) floors; absolute floors still apply"
         type: boolean
         default: false
-      full_replace:
-        description: "Full-replace rmp_professors/rmp_reviews instead of upserting"
-        type: boolean
-        default: false
 
-# ci.yml sets all three of these; the job that writes prod gets them too.
+# ci.yml is read-only too; the job that writes prod gets no more than it does.
 permissions:
   contents: read
 
@@ -55,24 +51,16 @@ jobs:
             backend/Better_Scraper/output_data
 
       # Snapshot last week's row counts BEFORE the scrape overwrites the CSVs.
-      # The sanity check compares the fresh scrape against these; a missing file
-      # (first run / rebuilt store) leaves the count at 0, which skips the
-      # relative check and falls back to the absolute floors.
+      # Written to RUNNER_TEMP, not into output_data, so the store push at the
+      # end can't commit it. A file absent from the store is left out of the
+      # baseline entirely, which makes `check` fall back to absolute floors for
+      # it rather than comparing against a phantom 0.
       - name: Record previous data-store counts
         working-directory: backend
         run: |
-          data_dir="Better_Scraper/output_data"
-          old_profs=0
-          old_reviews=0
-          if [ -f "$data_dir/rmp_professors.csv" ]; then
-            old_profs=$(python -c "import pandas as pd; print(len(pd.read_csv('$data_dir/rmp_professors.csv')))")
-          fi
-          if [ -f "$data_dir/rmp_reviews.csv" ]; then
-            old_reviews=$(python -c "import pandas as pd; print(len(pd.read_csv('$data_dir/rmp_reviews.csv')))")
-          fi
-          echo "OLD_PROFS=$old_profs" >> "$GITHUB_ENV"
-          echo "OLD_REVIEWS=$old_reviews" >> "$GITHUB_ENV"
-          echo "Previous store: $old_profs professors, $old_reviews reviews"
+          python Better_Scraper/scrape_guard.py baseline \
+            --data-dir Better_Scraper/output_data \
+            --out "$RUNNER_TEMP/baseline.json"
 
       # If RMP starts 403/429-ing the runner's datacenter IP, enable the token
       # bucket without a code change — uncomment the two lines below.
@@ -86,74 +74,64 @@ jobs:
             --file_path Better_Scraper/output_data/rmp_professors.csv
 
       # Guardrail: a broken/rate-limited scrape must not overwrite good data.
-      # Two layers, both checked before any DB or data-store write:
-      #   - absolute floors (~70-80% of the normal ≈3,889 profs / ≈44.5k reviews)
-      #     catch catastrophic failures and cover the first run,
-      #   - relative floors (>= 95% of last week's store) catch degraded scrapes
-      #     that would otherwise slide past, e.g. 3,100 profs beating the 3,000
-      #     floor and then force-pushing over the only copy of good data.
+      # scrape_guard enforces both layers over all six files — absolute floors
+      # (~80% of healthy, covering the first run) and a 98% floor against the
+      # baseline above, which catches degraded scrapes that clear the absolute
+      # floor anyway. It also fails on a missing TRACE/photo file, since
+      # precompute.py reads all six and would otherwise crash mid-run with the
+      # RMP load already written. Logic and tests live in
+      # backend/tests/test_scrape_guard.py, so ci.yml exercises it on every push.
       - name: Sanity check scrape
         working-directory: backend
         env:
           ACCEPT_LOWER: ${{ inputs.accept_lower_counts }}
         run: |
-          # precompute.py reads all six CSVs; a missing TRACE/photo file crashes
-          # it mid-run. Fail loud here before touching the DB. trace_comments may
-          # be shipped as .csv or .zip (precompute falls back), so accept either.
-          data_dir="Better_Scraper/output_data"
-          for f in rmp_professors.csv rmp_reviews.csv trace_courses.csv trace_scores.csv professor_photos.csv; do
-            if [ ! -f "$data_dir/$f" ]; then
-              echo "::error::Missing required data file: $f. Aborting before DB writes."
-              exit 1
-            fi
-          done
-          if [ ! -f "$data_dir/trace_comments.csv" ] && [ ! -f "$data_dir/trace_comments.zip" ]; then
-            echo "::error::Missing trace_comments (.csv or .zip). Aborting before DB writes."
-            exit 1
-          fi
-          profs=$(python -c "import pandas as pd; print(len(pd.read_csv('$data_dir/rmp_professors.csv')))")
-          reviews=$(python -c "import pandas as pd; print(len(pd.read_csv('$data_dir/rmp_reviews.csv')))")
-          echo "Scraped $profs professors, $reviews reviews (previous week: $OLD_PROFS / $OLD_REVIEWS)"
-          if [ "$profs" -lt 3000 ]; then
-            echo "::error::Only $profs professors scraped (< 3000 floor). Aborting to protect existing data."
-            exit 1
-          fi
-          if [ "$reviews" -lt 30000 ]; then
-            echo "::error::Only $reviews reviews scraped (< 30000 floor). Aborting to protect existing data."
-            exit 1
-          fi
+          accept_flag=""
           if [ "$ACCEPT_LOWER" = "true" ]; then
-            echo "accept_lower_counts set — skipping relative floors."
-          else
-            if [ "$OLD_PROFS" -gt 0 ] && [ "$profs" -lt $(( OLD_PROFS * 95 / 100 )) ]; then
-              echo "::error::$profs professors < 95% of last week's $OLD_PROFS. Aborting; re-run with accept_lower_counts if the drop is real."
-              exit 1
-            fi
-            if [ "$OLD_REVIEWS" -gt 0 ] && [ "$reviews" -lt $(( OLD_REVIEWS * 95 / 100 )) ]; then
-              echo "::error::$reviews reviews < 95% of last week's $OLD_REVIEWS. Aborting; re-run with accept_lower_counts if the drop is real."
-              exit 1
-            fi
+            accept_flag="--accept-lower"
           fi
+          python Better_Scraper/scrape_guard.py check \
+            --data-dir Better_Scraper/output_data \
+            --baseline "$RUNNER_TEMP/baseline.json" \
+            $accept_flag
 
-      # Upsert the freshly scraped RMP rows into the raw DB tables so new
-      # review text / new professors reach the site. Idempotent — skips rows
-      # already present, so weekly writes are just the delta. Upserts never
-      # delete or update, so RMP-side deletions/edits drift: on the first
-      # Sunday of each month (or on the full_replace input) the RMP tables
-      # are truncated and fully reloaded from the fresh CSVs instead.
+      # The two RMP tables are loaded differently on purpose.
+      #
+      # rmp_professors is full-replaced every run: 3,889 rows, and its columns
+      # are aggregates RMP recomputes constantly (rating, num_ratings,
+      # would_take_again_pct), which an upsert's DO NOTHING would never update.
+      # Nothing in the request path reads this table — only precompute, later in
+      # this same job — so the reload window is invisible to users, and no
+      # foreign key or source_ref points at its ids.
+      #
+      # rmp_reviews is upserted, then pruned by the next step. It must NOT be
+      # truncated: evidence.source_ref for RMP is the review's rowid
+      # (scraper/load_evidence_to_crdb.py:208), so regenerating ids orphans the
+      # RMP half of the RAG corpus and forces a re-embed. Truncating also empties
+      # a table the site reads on every professor page, since the TRUNCATE
+      # commits before the reload starts.
       - name: Load fresh RMP rows into CockroachDB
         if: ${{ !inputs.dry_run }}
         working-directory: backend
         env:
           CRDB_DATABASE_URL: ${{ secrets.CRDB_DATABASE_URL }}
-          FULL_REPLACE: ${{ inputs.full_replace }}
         run: |
-          replace_flag=""
-          if [ "$FULL_REPLACE" = "true" ] || { [ "${{ github.event_name }}" = "schedule" ] && [ "$(date -u +%-d)" -le 7 ]; }; then
-            replace_flag="--replace"
-            echo "Full-replace mode: truncating and reloading rmp_professors/rmp_reviews"
-          fi
-          python migrate_to_crdb.py rmp_professors rmp_reviews $replace_flag
+          python migrate_to_crdb.py rmp_professors --replace
+          python migrate_to_crdb.py rmp_reviews
+
+      # Reviews deleted on RMP have to leave the table too, or the list keeps
+      # rendering rows the count beside it (derived from the fresh CSV by
+      # precompute) has already dropped. Runs before precompute so the reviews
+      # and the counts describe the same set. Refuses to delete more than 5% of
+      # the table without --force; the real weekly delta is tens of rows.
+      - name: Prune reviews deleted on RMP
+        if: ${{ !inputs.dry_run }}
+        working-directory: backend
+        env:
+          CRDB_DATABASE_URL: ${{ secrets.CRDB_DATABASE_URL }}
+        run: |
+          python prune_rmp_reviews.py \
+            --csv Better_Scraper/output_data/rmp_reviews.csv
 
       # RMP-only refresh: TRACE data is unchanged this run, so skip the heavy
       # TRACE table maintenance (REFRESH_TRACE=false). Run a full precompute

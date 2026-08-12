@@ -15,6 +15,7 @@ import {
 import { fetchProfessorFull } from '../api/api';
 import type { ProfessorProfile, ProfessorReview, TraceComment, RedditMention } from '../api/api';
 import { termSortKey } from '../utils/termUtils';
+import { poolRatings, projectRmp } from '../utils/ratingBlend';
 import { isPinned, pinnedFirst } from '../utils/askPinMatch';
 import { useAuth } from '../context/AuthContext';
 import SignInModal from '../components/SignInModal';
@@ -533,6 +534,7 @@ const [showCourseTip, setShowCourseTip] = useState(() => localStorage.getItem('p
       return {
         avgRating: null,
         rmpRating: null,
+        rmpAdjusted: null,
         traceRating: null,
         difficulty: null,
         totalRatings: null,
@@ -545,6 +547,10 @@ const [showCourseTip, setShowCourseTip] = useState(() => localStorage.getItem('p
       return {
         avgRating: profile.avgRating,
         rmpRating: profile.rmpRating,
+        /* Served, not recomputed: this is the projection the stored avgRating
+           was actually pooled from, so the card cannot drift from the column the
+           way the leaderboard tooltip did. */
+        rmpAdjusted: profile.rmpAdjusted ?? null,
         traceRating: profile.traceRating,
         difficulty: profile.difficulty ?? 0,
         /* The catalog's own count — the same field the GOATED board's "Ratings"
@@ -558,10 +564,10 @@ const [showCourseTip, setShowCourseTip] = useState(() => localStorage.getItem('p
       };
     }
 
-    // Course-filtered: use RMP data for rating/difficulty; fall back to profile-level for TRACE values.
-    // Averaged over every rating in the selection, the same rows the count below
-    // reports — a mean over the text-deduplicated subset would be a mean of one
-    // population beside the size of another.
+    // Course-filtered: every figure below is recomputed over the selection, RMP
+    // and TRACE alike. Averaged over every rating in the selection, the same rows
+    // the count below reports — a mean over the text-deduplicated subset would be
+    // a mean of one population beside the size of another.
     const rmpRating = rmpRatingsInSelection.length > 0
       ? rmpRatingsInSelection.reduce((acc, r) => acc + r.quality, 0) / rmpRatingsInSelection.length
       : null;
@@ -569,15 +575,41 @@ const [showCourseTip, setShowCourseTip] = useState(() => localStorage.getItem('p
       ? rmpRatingsInSelection.reduce((acc, r) => acc + r.difficulty, 0) / rmpRatingsInSelection.length
       : null;
 
-    const traceRating = profile.traceRating;
-    let avgRating = 0;
-    if (rmpRating !== null && traceRating !== null) {
-      avgRating = (rmpRating + traceRating) / 2;
-    } else if (rmpRating !== null) {
-      avgRating = rmpRating;
-    } else if (traceRating !== null) {
-      avgRating = traceRating;
+    /* TRACE over the same selection, from the per-course response counts the
+       "Total Ratings" sum below already reads. This used to be
+       profile.traceRating — the professor's whole-career TRACE number — so a
+       filtered card paired a filtered RMP mean with an unfiltered TRACE one and
+       called the result a rating for the selection.
+
+       Weighted by response, and over the overall-question counts specifically,
+       which is how trace_rating itself is defined (precompute.trace_review_counts);
+       a mean of the per-course means would weight a 12-response section like a
+       300-response one. */
+    let traceWeighted = 0, traceCount = 0;
+    if (profile.traceRatingCounts) {
+      for (const code of selectedCourses) {
+        const rc = profile.traceRatingCounts[code];
+        if (!rc) continue;
+        traceWeighted += rc.count1 + 2 * rc.count2 + 3 * rc.count3 + 4 * rc.count4 + 5 * rc.count5;
+        traceCount += rc.count1 + rc.count2 + rc.count3 + rc.count4 + rc.count5;
+      }
     }
+    const traceRating = traceCount > 0 ? traceWeighted / traceCount : null;
+
+    /* Same rule as the catalog's avg_rating, applied to the selection: project
+       RMP onto the TRACE scale, then pool by precision. Computing it here rather
+       than reading profile.avgRating is the point of the filter — that column
+       describes every course — and computing it with (rmp + trace) / 2, as this
+       did, put the headline number on neither scale and moved it half a point on
+       a checkbox toggle. See utils/ratingBlend.ts. */
+    const avgRating = poolRatings(
+      rmpRating, rmpRatingsInSelection.length,
+      traceRating, traceCount,
+      profile.ratingBlend ?? null,
+    ) ?? 0;
+    const rmpAdjusted = rmpRating !== null && traceRating !== null && profile.ratingBlend
+      ? projectRmp(rmpRating, profile.ratingBlend)
+      : null;
 
     const coursesWithHours = filteredTraceCourses.filter(c => c.hoursPerWeek != null);
     const filteredHoursPerWeek = coursesWithHours.length > 0
@@ -607,16 +639,14 @@ const [showCourseTip, setShowCourseTip] = useState(() => localStorage.getItem('p
     return {
       avgRating,
       rmpRating,
+      rmpAdjusted,
       traceRating,
       difficulty,
       /* Same definition as profile.totalRatings, restricted to the selection:
-         RMP rating rows plus responses to TRACE's overall question. */
-      totalRatings: rmpRatingsInSelection.length + (profile.traceRatingCounts
-        ? Array.from(selectedCourses).reduce((sum, code) => {
-            const rc = profile.traceRatingCounts![code];
-            return rc ? sum + rc.count1 + rc.count2 + rc.count3 + rc.count4 + rc.count5 : sum;
-          }, 0)
-        : 0),
+         RMP rating rows plus responses to TRACE's overall question — traceCount
+         is that second term, already summed above as the pool's weight, so the
+         count and the rating describe one set of responses by construction. */
+      totalRatings: rmpRatingsInSelection.length + traceCount,
       wouldTakeAgainPct: profile.wouldTakeAgainPct,
       hoursPerWeek: filteredHoursPerWeek,
     };
@@ -998,8 +1028,45 @@ const [showCourseTip, setShowCourseTip] = useState(() => localStorage.getItem('p
           <StarRating rating={stats.avgRating ?? 0} size="lg" />
           {(stats.rmpRating !== null || stats.traceRating !== null) && (
             <div className="prof-stat-breakdown">
-              {stats.rmpRating !== null && <span>RMP: {stats.rmpRating.toFixed(2)}</span>}
-              {stats.traceRating !== null && <span>TRACE: {stats.traceRating.toFixed(2)}</span>}
+              <div className="prof-stat-breakdown-rows">
+                {stats.rmpRating !== null && <span>RMP: {stats.rmpRating.toFixed(2)}</span>}
+                {/* The number the Overall above was actually computed from. The
+                    leaderboard tooltip carries the same row for the same reason:
+                    RMP and TRACE are two units, so without it no arithmetic a
+                    reader tries reconciles the three figures — RMP 5.00 with
+                    TRACE 5.00 shows 4.99, because RMP 5.00 projects to 4.96.
+                    Indented under RMP, since it is that same measurement in
+                    other units rather than a third source. */}
+                {stats.rmpAdjusted != null && (
+                  <span className="prof-stat-breakdown-sub">
+                    on the TRACE scale: {stats.rmpAdjusted.toFixed(2)}
+                  </span>
+                )}
+                {stats.traceRating !== null && <span>TRACE: {stats.traceRating.toFixed(2)}</span>}
+              </div>
+              {/* Why Overall is not simply one of the numbers above it. Both
+                  cases need saying: this card, like the GOATED column, is on the
+                  TRACE scale, which runs ~0.8 higher than RMP's and is 2.4x
+                  narrower. The RMP-only case especially — an unexplained 3.10
+                  displayed as 4.11 is exactly what reads as a bug, and until now
+                  this page said nothing about it at all.
+
+                  Wording matches Homepage's tooltip deliberately. A reader who
+                  meets the explanation on the leaderboard and again here should
+                  not have to work out whether two different sentences describe
+                  the same arithmetic. */}
+              {stats.rmpRating !== null && stats.traceRating !== null ? (
+                <div className="prof-stat-breakdown-note">
+                  RateMyProfessors scores run lower than TRACE scores, so the RMP
+                  score is converted to the TRACE scale first. The two are then
+                  averaged, and the one with more responses counts for more.
+                </div>
+              ) : stats.rmpRating !== null ? (
+                <div className="prof-stat-breakdown-note">
+                  No TRACE scores here, so the RMP score is converted to the TRACE
+                  scale to keep it comparable.
+                </div>
+              ) : null}
             </div>
           )}
         </div>

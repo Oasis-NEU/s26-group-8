@@ -439,8 +439,36 @@ def test_business_is_the_only_board_the_review_floor_changes(corpus):
         f"argument needs re-measuring.")
 
 
-def test_law_has_no_ties_needing_the_name_tiebreak(corpus):
-    """server.py says Law's ties all broke in the total_reviews rebuild."""
-    groups = _tie_group_sizes(corpus, college="Law")
-    assert not groups, (
-        f"Law has {len(groups)} tie groups again; server.py says it has none.")
+def test_no_tie_group_reaches_a_board_top_ten(corpus):
+    """The claim that survives a refresh: ties exist, but none are visible.
+
+    This replaced a per-college assertion (that Law had none) which failed on
+    data drift alone the first time total_reviews moved — the comment it guarded
+    even predicted that, and still named the college. Which college holds a tie
+    is not a property of the code; whether a tie can reorder a board a reader
+    actually sees is.
+
+    Measured the way the endpoint measures it: the same ORDER BY, per college,
+    limited to the same 10.
+    """
+    ranked = (f"{server.RANKING_SCORE_SQL} DESC NULLS LAST, total_reviews DESC, name")
+    visible = []
+    for row in corpus.rows(
+            "SELECT DISTINCT college FROM professors_catalog "
+            "WHERE college IS NOT NULL", ()):
+        college = row["college"]
+        top = corpus.rows(
+            f"SELECT name, {server.RANKING_SCORE_SQL} s, total_reviews "
+            f"FROM professors_catalog WHERE college = %s AND total_reviews >= %s "
+            f"ORDER BY {ranked} LIMIT 10",
+            (corpus.prior, college, server.BOARD_MIN_REVIEWS, corpus.prior))
+        seen = {}
+        for r in top:
+            seen.setdefault((r["s"], r["total_reviews"]), []).append(r["name"])
+        for names in seen.values():
+            if len(names) > 1:
+                visible.append((college, sorted(names)))
+    assert not visible, (
+        f"a tie now decides a visible board position: {visible}. The name "
+        f"tiebreak keeps the order stable, but server.py claims no tie reaches "
+        f"a top 10 — re-measure that claim.")

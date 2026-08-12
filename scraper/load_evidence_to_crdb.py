@@ -7,6 +7,8 @@ Usage:
     python load_evidence_to_crdb.py --build-evidence  # populate evidence (Task 2)
 """
 import argparse, itertools, os, sys, time, re, hashlib, unicodedata
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend"))
+from denylist import is_denied_key  # noqa: E402
 from dotenv import load_dotenv
 import psycopg2
 
@@ -165,9 +167,17 @@ def build_reddit_rows(query_fn) -> list:
         LEFT JOIN reddit_sentiment s
           ON s.source_id = t.source_id AND s.professor_slug = m.professor_slug
     """, ())
+    # Reddit rows carry a slug and no name, so they cannot be tested against the
+    # denylist directly. Restricting to slugs professors_catalog still holds does
+    # it transitively — precompute drops a denied professor from the catalog —
+    # and independently drops mentions pointing at professors who no longer
+    # exist, which were unreachable from the site but still retrievable by chat.
+    known_slugs = {r["slug"] for r in query_fn("SELECT slug FROM professors_catalog", ())}
     out = []
     for r in rows:
         if not is_meaningful(r.get("body")):
+            continue
+        if r.get("professor_slug") not in known_slugs:
             continue
         ev = _row("reddit", r["source_id"], r.get("professor_slug"), None, r.get("body"),
                   sentiment=r.get("sentiment"), score=r.get("score"), permalink=r.get("permalink"),
@@ -194,6 +204,13 @@ def build_rmp_rows(query_fn) -> list:
             continue
         slug = slug_by_key.get(r.get("name_key"))
         if not slug:
+            continue
+        # Belt and braces on a data-deletion request. Once precompute has run
+        # with the denylist the professor is absent from professors_catalog and
+        # the lookup above already fails — but an evidence build against a
+        # catalog written before the request would otherwise re-embed them, and
+        # this corpus is what the chat quotes.
+        if is_denied_key(r.get("name_key")):
             continue
         code = norm_code(r.get("course"))
         prof_codes = taught.get(r.get("name_key"), set())
@@ -226,6 +243,8 @@ def build_trace_rows(query_fn) -> list:
         if not is_meaningful(r.get("comment")):
             continue
         slug = r.get("professor_slug")
+        if is_denied_key(r.get("name_key")):
+            continue
         code = norm_code(r.get("course_code"))
         k = (slug, code, dedup_key(r.get("comment")))
         if k in seen:

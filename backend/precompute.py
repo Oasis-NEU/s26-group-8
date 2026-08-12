@@ -13,6 +13,9 @@ import psycopg2
 from psycopg2.extras import execute_values
 from dotenv import load_dotenv
 
+import csv_store
+from denylist import denied_hashes, is_denied_key
+
 load_dotenv()
 
 CRDB_URL = os.getenv("NEW_CRDB_DATABASE_URL") or os.getenv("CRDB_DATABASE_URL")
@@ -546,6 +549,7 @@ def apply_counted_rmp_rating(rmp_profs, review_keys, review_quality):
 # measure_calibration and test_rating_blend read them where they always did.
 from rating_scale import (                                        # noqa: E402
     FALLBACK_CALIBRATION,      # rmp ~ slope * trace + intercept
+    FALLBACK_VARIANCES,        # per-response variance: RMP, TRACE
     CALIBRATION_MIN_RMP,       # what counts as well-evidenced for the fit
     CALIBRATION_MIN_TRACE,
     CALIBRATION_MIN_POINTS,    # too few pairs -> keep the fallback fit
@@ -553,8 +557,6 @@ from rating_scale import (                                        # noqa: E402
     CALIBRATION_MIN_CORR,      # unrelated (or inverted) scales -> no fit
     fit_rma,
 )
-
-FALLBACK_VARIANCES = (1.644, 0.534)    # per-response variance: RMP, TRACE
 
 
 def fit_calibration(trace_ratings, rmp_ratings):
@@ -785,12 +787,11 @@ def main():
     print(f"  rmp_reviews: {len(rmp_reviews)}")
     tc = pd.read_csv(os.path.join(csv_dir, "trace_courses.csv"))
     print(f"  trace_courses: {len(tc)}")
-    ts = pd.read_csv(os.path.join(csv_dir, "trace_scores.csv"))
+    # The big TRACE exports may arrive zipped — see csv_store. pandas reads a
+    # .zip straight from the path, so resolving it is the whole job.
+    ts = pd.read_csv(csv_store.resolve(csv_dir, "trace_scores.csv"))
     print(f"  trace_scores: {len(ts)}")
-    tcomments_path = os.path.join(csv_dir, "trace_comments.csv")
-    if not os.path.exists(tcomments_path):
-        tcomments_path = os.path.join(csv_dir, "trace_comments.zip")
-    tcomments = pd.read_csv(tcomments_path)
+    tcomments = pd.read_csv(csv_store.resolve(csv_dir, "trace_comments.csv"))
     print(f"  trace_comments: {len(tcomments)}")
     photos = pd.read_csv(os.path.join(csv_dir, "professor_photos.csv"))
     print(f"  professor_photos: {len(photos)}")
@@ -918,6 +919,28 @@ def main():
     tc["_last"] = tc["instructor_last_name"].apply(normalize_name)
     tc["name_key"] = (tc["_first"] + " " + tc["_last"]).apply(normalize_name)
     tc["term_id"] = pd.to_numeric(tc["term_id"], errors="coerce")
+
+    # ── Data-deletion requests ──
+    # Dropped here, after both sides have a name_key and before anything is
+    # derived from them, so one filter covers every downstream product:
+    # professors_catalog, course_catalog, the stats counts, the calibration fit
+    # and the response variances. Filtering later would leave a professor out of
+    # the catalog while their responses still moved the numbers on it.
+    #
+    # This is the enforcement point that matters most, because it is the one that
+    # runs every refresh. A row deleted by hand comes back with the next rebuild;
+    # a row dropped here never enters it. See denylist.py.
+    if denied_hashes():
+        rmp_before, tc_before = len(rmp_profs), len(tc)
+        rmp_profs = rmp_profs[~rmp_profs["_name_key"].map(is_denied_key)].copy()
+        tc = tc[~tc["name_key"].map(is_denied_key)].copy()
+        # Scores and comments carry no name — they reach a professor only by
+        # joining trace_courses on (course_id, instructor_id, term_id), so
+        # dropping the course rows is what detaches them. The rows themselves are
+        # purge_denied.py's job; a build-time filter cannot delete.
+        print(f"Denylist: dropped {rmp_before - len(rmp_profs)} RMP and "
+              f"{tc_before - len(tc)} TRACE course rows "
+              f"({len(denied_hashes())} entries)")
 
     # ── TRACE department lookup ──
     dept_sorted = tc.sort_values("term_id", ascending=False).drop_duplicates(subset=["name_key"])
@@ -1207,10 +1230,12 @@ def main():
             -- had to reach for a different one. NULL means name_key is already
             -- the TRACE key. professor_full.trace_key() is the only reader.
             --
-            -- Appended last, not slotted beside name_key where it belongs:
+            -- Appended last, not slotted beside name_key where it belongs.
             -- scraper/match_professors.py reads catalog rows out of a SQL backup
-            -- by hardcoded column position, so inserting mid-table silently
-            -- shifts every field after it into the wrong slot.
+            -- and now takes its column positions from each INSERT's own column
+            -- list, so a mid-table insert no longer shifts fields into the wrong
+            -- slot — but it did until that was fixed, and its fallback order is
+            -- still positional, so appending stays the cheaper habit.
             trace_name_key TEXT
         )
     """)
@@ -1258,6 +1283,28 @@ def main():
     cur.execute(
         "UPSERT INTO stats_cache VALUES ('professors', %s), ('courses', %s), ('comments', %s), ('departments', %s)",
         (stat_professors, stat_courses, stat_comments, stat_departments)
+    )
+    conn.commit()
+
+    # 3b. rating_meta — the per-response variances behind the blend.
+    #
+    # Separate table from stats_cache because that one is INT-valued, and these
+    # are variances. Stored rather than refit at request time for the reason
+    # server.rating_calibration does the opposite: the calibration fit needs only
+    # the two rating columns professors_catalog already carries, while these are
+    # pooled within-professor over every raw rmp_reviews row and every TRACE
+    # count_1..5 — ~44k and ~1.1M rows, which is a precompute-sized scan, not a
+    # cache-miss-sized one.
+    #
+    # Only the professor page's course-filtered card reads them, via the scalar
+    # rating_scale.rmp_weight_per_rating. avg_rating itself is written above from
+    # the in-memory values, so a missing or stale row here can never disagree with
+    # the column — it degrades to FALLBACK_VARIANCES.
+    print("Updating rating_meta...")
+    cur.execute("CREATE TABLE IF NOT EXISTS rating_meta (key TEXT PRIMARY KEY, value FLOAT)")
+    cur.execute(
+        "UPSERT INTO rating_meta VALUES ('var_rmp', %s), ('var_trace', %s)",
+        (float(variances[0]), float(variances[1]))
     )
     conn.commit()
 

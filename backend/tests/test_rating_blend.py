@@ -31,6 +31,7 @@ from precompute import (
     rmp_response_variance,
     trace_response_variance,
 )
+from rating_scale import pool_ratings, project_rmp, rmp_weight_per_rating
 
 # Roughly the real measured values, so the numbers in these tests are realistic.
 CAL = (1.90, -4.71)
@@ -407,3 +408,85 @@ def test_measure_variances_falls_back_when_unmeasurable():
 def test_measure_variances_reports_measured_values():
     var_rmp, var_trace = measure_variances([1, 5], ["a", "a"], [[1, 0, 0, 0, 1]])
     assert (var_rmp, var_trace) == (pytest.approx(8.0), pytest.approx(8.0))
+
+
+# ── the scalar twins, and the frontend copy ─────────────────────────────────
+#
+# blend_ratings is vectorised over numpy because precompute pools ~5,000
+# professors at once. Two other places need the same arithmetic one professor at
+# a time and cannot carry numpy: rating_scale.pool_ratings (pure Python), and
+# frontend/src/utils/ratingBlend.ts, which pools a course-filtered subset in the
+# browser. Three copies of a weighted mean is two too many to leave unpinned —
+# the filtered card carried (rmp + trace) / 2 for exactly as long as nothing
+# compared it to this file.
+
+def test_pool_ratings_matches_the_vectorised_blend():
+    """The scalar twin agrees with blend_ratings on the batch path's own inputs."""
+    weight = rmp_weight_per_rating(CAL, VARS)
+    cases = [(3.10, 5, 4.50, 300), (3.10, 400, 4.50, 10), (4.63, 88, 4.74, 512),
+             (1.00, 3, 2.20, 40), (5.00, 250, 4.96, 250)]
+    for rmp, n_rmp, trace, n_trace in cases:
+        vectorised = float(blend_ratings(rmp, n_rmp, trace, n_trace, CAL, VARS))
+        assert pool_ratings(rmp, n_rmp, trace, n_trace, CAL, weight) == pytest.approx(
+            vectorised, abs=1e-9), f"scalar twin drifted on {(rmp, n_rmp, trace, n_trace)}"
+
+
+def test_rmp_weight_per_rating_is_the_whole_of_the_pooling_weights():
+    """One scalar reproduces the two-variance weighting, which is why only it ships.
+
+    blend_ratings weighs RMP by n * slope^2 / var_rmp and TRACE by n / var_trace.
+    A weighted mean is invariant to scaling both weights, so var_trace divides
+    out and the browser needs one number instead of two variances measured from
+    raw review rows it will never hold.
+    """
+    slope, _ = CAL
+    var_rmp, var_trace = VARS
+    assert rmp_weight_per_rating(CAL, VARS) == pytest.approx(
+        (slope ** 2 / var_rmp) / (1.0 / var_trace))
+
+
+def test_pool_ratings_single_sided_selections_stay_on_the_trace_scale():
+    """A course selection can hold one source only; it still gets a comparable number.
+
+    Matches apply_blended_rating's rule for a single-source professor: RMP alone
+    is projected, not left raw. avg_rating is one column readers sort on, so a
+    filtered card that returned raw RMP would show the same professor a point
+    lower for having a course unchecked.
+    """
+    weight = rmp_weight_per_rating(CAL, VARS)
+    assert pool_ratings(3.10, 5, None, 0, CAL, weight) == pytest.approx(
+        float(calibrate_rmp(3.10, CAL)))
+    assert pool_ratings(None, 0, 4.50, 300, CAL, weight) == 4.50
+    # A rating with no responses behind it is not evidence on either side.
+    assert pool_ratings(3.10, 0, 4.50, 0, CAL, weight) is None
+    assert pool_ratings(None, 0, None, 0, CAL, weight) is None
+
+
+def test_frontend_selftest_constants_are_this_module_s_output():
+    """The values hardcoded in ratingBlend.selftest.ts, recomputed here.
+
+    That file is a runnable check with no Python in it, so its expectations are
+    constants — and a constant copied out of another language is exactly the kind
+    of number that goes stale silently. If FALLBACK_CALIBRATION, FALLBACK_VARIANCES
+    or the arithmetic moves, this fails and names the file to update.
+    """
+    weight = rmp_weight_per_rating(FALLBACK_CALIBRATION, FALLBACK_VARIANCES)
+    expected = {
+        "rmpWeightPerRating": weight,
+        "project 3.10": project_rmp(3.10, FALLBACK_CALIBRATION),
+        "project 5.00": project_rmp(5.00, FALLBACK_CALIBRATION),
+        "project 1.00": project_rmp(1.00, FALLBACK_CALIBRATION),
+        "pool 3.10/5 4.50/300": pool_ratings(3.10, 5, 4.50, 300, FALLBACK_CALIBRATION, weight),
+        "pool 3.10/400 4.50/10": pool_ratings(3.10, 400, 4.50, 10, FALLBACK_CALIBRATION, weight),
+        "pool 3.10/40 4.50/120": pool_ratings(3.10, 40, 4.50, 120, FALLBACK_CALIBRATION, weight),
+    }
+    # Rounded to the 6 places the selftest's `near` compares at (5e-4).
+    assert {k: round(v, 6) for k, v in expected.items()} == {
+        "rmpWeightPerRating": 1.839896,
+        "project 3.10": 4.172269,
+        "project 5.00": 4.970588,
+        "project 1.00": 3.289916,
+        "pool 3.10/5 4.50/300": 4.490249,
+        "pool 3.10/400 4.50/10": 4.176662,
+        "pool 3.10/40 4.50/120": 4.375412,
+    }, "update frontend/src/utils/ratingBlend.selftest.ts to match"

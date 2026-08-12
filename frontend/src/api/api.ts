@@ -1,3 +1,5 @@
+import type { RatingBlend } from "../utils/ratingBlend";
+
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
 /* ---- Types ---- */
@@ -81,6 +83,14 @@ export interface ProfessorProfile {
   focusY: number;
   hoursPerWeek: number | null;
   traceRatingCounts?: Record<string, TraceRatingCounts>;
+  /* Raw RMP put on TRACE's scale, the value avgRating was computed from. Served
+     for two-source professors only: for an RMP-only professor avgRating already
+     is this number. Same field, same rule, as the leaderboard's. */
+  rmpAdjusted?: number | null;
+  /* Parameters for pooling a course-filtered subset, since avgRating describes
+     the whole professor. Absent for a TRACE-only professor, who needs no
+     projection. See utils/ratingBlend.ts. */
+  ratingBlend?: RatingBlend | null;
   radarData?: RadarDataPoint[] | null;
   radarTermTitle?: string | null;
   colleagues?: { name: string; slug: string; avgRating: number | null; totalRatings: number }[];
