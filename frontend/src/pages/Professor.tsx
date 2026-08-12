@@ -922,10 +922,14 @@ const [showCourseTip, setShowCourseTip] = useState(() => localStorage.getItem('p
 
   if (error || !profile || !stats) return <NotFound />;
 
-  const seoDescription =
-    `${profile.name} professor reviews and ratings: ${profile.avgRating.toFixed(1)}/5 from ${profile.totalRatings} student reviews at Northeastern` +
-    (profile.wouldTakeAgainPct != null ? ` (${profile.wouldTakeAgainPct}% would take again)` : '') +
-    `. TRACE + RateMyProfessor + Reddit.`;
+  /* Mirrors render.professor_html's two forms deliberately: that module serves
+     this same page to crawlers, and a professor whose description differs
+     between the two renders is the kind of mismatch that costs the canonical. */
+  const seoDescription = profile.avgRating !== null
+    ? `${profile.name} professor reviews and ratings: ${profile.avgRating.toFixed(1)}/5 from ${profile.totalRatings} student reviews at Northeastern` +
+      (profile.wouldTakeAgainPct != null ? ` (${profile.wouldTakeAgainPct}% would take again)` : '') +
+      `. TRACE + RateMyProfessor + Reddit.`
+    : `${profile.name}, Northeastern ${profile.department} professor: no student ratings yet. TRACE + RateMyProfessor + Reddit.`;
   const profCanonical = `https://ratemyhusky.com/professors/${slug}`;
   const profJsonLd = {
     '@context': 'https://schema.org',

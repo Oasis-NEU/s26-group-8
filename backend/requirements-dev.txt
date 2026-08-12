@@ -3,4 +3,10 @@ pytest
 # requirements.txt (the Railway server never touches it) and requirements-data.txt
 # is not installed by ci.yml, so without it those modules fail at collection —
 # which aborts the whole session and takes the other ~650 tests down with them.
-pandas
+#
+# Pinned to match requirements-data.txt. The two must agree: these tests exist to
+# pin precompute's arithmetic, and testing it under a different pandas than the
+# refresh runs is how the 2026-08-12 crash stayed invisible — pandas 3 changed
+# astype(str)'s handling of NaN, and the suite passed under it anyway because
+# nothing exercises precompute.main(). Lift both pins together, never one.
+pandas>=2.2,<3

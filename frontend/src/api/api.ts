@@ -71,7 +71,12 @@ export interface ProfessorProfile {
   department: string;
   rmpRating: number | null;
   traceRating: number | null;
-  avgRating: number;
+  /* Null for a professor with no RMP ratings and no responses to TRACE's
+     overall question — the catalog holds NULL and the API no longer coalesces
+     it to 0, since 0 is off the bottom of the 1-5 scale and rendered as a real
+     score. Every display of it needs the null branch; "—" is the house style,
+     matching what totalRatings already showed for the same professors. */
+  avgRating: number | null;
   wouldTakeAgainPct: number | null;
   difficulty: number | null;
   totalRatings: number;

@@ -139,7 +139,13 @@ def build_profile_unauthed(prof, trace_course_rows, query, blend_fields=None):
         "department": prof["department"],
         "rmpRating": round(prof["rmp_rating"], 2) if prof["rmp_rating"] else None,
         "traceRating": round(prof["trace_rating"], 2) if prof["trace_rating"] else None,
-        "avgRating": round(prof["avg_rating"], 2) if prof["avg_rating"] else 0.0,
+        # None, not 0.0: precompute leaves avg_rating NULL for a professor with
+        # no RMP ratings and no responses to TRACE's overall question, and 0 is
+        # not a rating — the scale starts at 1, so the card rendered "0.00" under
+        # five empty stars while Total Ratings beside it read "—". Matches every
+        # other producer of this field (server.py:879, server.py:1102,
+        # bookmarks.py); this was the only one that coalesced.
+        "avgRating": round(prof["avg_rating"], 2) if prof["avg_rating"] else None,
         "wouldTakeAgainPct": round(prof["would_take_again_pct"], 1) if prof["would_take_again_pct"] else None,
         "difficulty": round(prof["difficulty"], 2) if prof["difficulty"] else None,
         "totalRatings": prof["total_reviews"],

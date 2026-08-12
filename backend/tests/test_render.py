@@ -83,6 +83,24 @@ def test_professor_html_jsonld_person_never_has_aggregate_rating():
     assert "aggregateRating" not in person
 
 
+def test_professor_html_says_no_ratings_rather_than_rating_them_zero():
+    """The crawler-facing page must not claim an unrated professor scored 0/5.
+
+    Same defect as the React card's "0.00", and worse, because this is the copy
+    Google indexes: "rated 0/5 by 0 students" reads as a real, terrible rating
+    of a professor nobody has reviewed. The stats row goes too — _stat_rows
+    already drops a None value, which is how difficulty and would-take-again
+    have always handled being absent.
+    """
+    profile = _base_profile(avgRating=None, totalRatings=0, wouldTakeAgainPct=None,
+                            difficulty=None, rmpRating=None, traceRating=None)
+    html = professor_html(profile, [], "https://ratemyhusky.com/professors/x")
+    assert "0/5" not in html
+    assert "Average rating" not in html
+    desc = _meta_description(html)
+    assert "no student ratings yet" in desc.lower()
+
+
 def test_professor_html_omits_aggregate_rating_when_no_ratings():
     profile = {
         "name": "New Prof", "department": "Music",
