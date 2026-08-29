@@ -7,6 +7,8 @@ Usage:
     python load_evidence_to_crdb.py --build-evidence  # populate evidence (Task 2)
 """
 import argparse, itertools, os, sys, time, re, hashlib, unicodedata
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend"))
+from denylist import is_denied_key  # noqa: E402
 from dotenv import load_dotenv
 import psycopg2
 
@@ -165,9 +167,17 @@ def build_reddit_rows(query_fn) -> list:
         LEFT JOIN reddit_sentiment s
           ON s.source_id = t.source_id AND s.professor_slug = m.professor_slug
     """, ())
+    # Reddit rows carry a slug and no name, so they cannot be tested against the
+    # denylist directly. Restricting to slugs professors_catalog still holds does
+    # it transitively — precompute drops a denied professor from the catalog —
+    # and independently drops mentions pointing at professors who no longer
+    # exist, which were unreachable from the site but still retrievable by chat.
+    known_slugs = {r["slug"] for r in query_fn("SELECT slug FROM professors_catalog", ())}
     out = []
     for r in rows:
         if not is_meaningful(r.get("body")):
+            continue
+        if r.get("professor_slug") not in known_slugs:
             continue
         ev = _row("reddit", r["source_id"], r.get("professor_slug"), None, r.get("body"),
                   sentiment=r.get("sentiment"), score=r.get("score"), permalink=r.get("permalink"),
@@ -178,9 +188,19 @@ def build_reddit_rows(query_fn) -> list:
 
 def build_rmp_rows(query_fn) -> list:
     """Yield evidence rows from rmp_reviews, resolving course_code via TRACE validation."""
-    slug_by_key = {r["name_key"]: r["slug"]
-                   for r in query_fn("SELECT name_key, slug FROM professors_catalog", ())}
-    taught = {}  # name_key -> set(course_code) from TRACE
+    catalog = query_fn(
+        "SELECT name_key, slug, trace_name_key FROM professors_catalog", ())
+    slug_by_key = {r["name_key"]: r["slug"] for r in catalog}
+    # RMP name_key -> the name TRACE files this professor's courses under. For a
+    # fuzzy-matched professor the two spellings differ, and `taught` below is
+    # keyed on TRACE's — so looking it up with the RMP key found nothing and the
+    # validation stopped being a validation: it stripped the course from every
+    # one of their reviews instead of only the ones TRACE cannot vouch for.
+    # NULL means no fuzzy match, so fall back to the RMP key. Same rule as
+    # professor_full.trace_key and the trace join below.
+    trace_key_by_key = {r["name_key"]: (r.get("trace_name_key") or r["name_key"])
+                        for r in catalog}
+    taught = {}  # TRACE name_key -> set(course_code) from TRACE
     for r in query_fn("SELECT DISTINCT name_key, course_code FROM trace_courses", ()):
         nk = r.get("name_key")
         code = norm_code(r.get("course_code", ""))
@@ -195,8 +215,16 @@ def build_rmp_rows(query_fn) -> list:
         slug = slug_by_key.get(r.get("name_key"))
         if not slug:
             continue
+        # Belt and braces on a data-deletion request. Once precompute has run
+        # with the denylist the professor is absent from professors_catalog and
+        # the lookup above already fails — but an evidence build against a
+        # catalog written before the request would otherwise re-embed them, and
+        # this corpus is what the chat quotes.
+        if is_denied_key(r.get("name_key")):
+            continue
         code = norm_code(r.get("course"))
-        prof_codes = taught.get(r.get("name_key"), set())
+        nk = r.get("name_key")
+        prof_codes = taught.get(trace_key_by_key.get(nk, nk), set())
         course_code = code if code in prof_codes else None
         meta = {
             "course": r.get("course"),
@@ -217,7 +245,14 @@ def build_trace_rows(query_fn) -> list:
         JOIN trace_courses c
           ON tc.tc_course_id = c.course_id AND tc.tc_instructor_id = c.instructor_id
          AND tc.tc_term_id = c.term_id
-        JOIN professors_catalog p ON p.name_key = c.name_key
+        -- COALESCE, not p.name_key: for a fuzzy-matched professor the catalog
+        -- holds the RMP spelling while trace_courses holds TRACE's, so a plain
+        -- equality drops every one of their comments from the corpus and the
+        -- chat cannot see what the profile page shows. trace_name_key is NULL
+        -- unless a fuzzy match happened, which is why this falls back rather
+        -- than joining on it outright. Same rule as professor_full.trace_key.
+        JOIN professors_catalog p
+          ON COALESCE(p.trace_name_key, p.name_key) = c.name_key
         WHERE tc.comment IS NOT NULL AND tc.comment <> ''
         ORDER BY tc.id
     """, ())
@@ -226,6 +261,8 @@ def build_trace_rows(query_fn) -> list:
         if not is_meaningful(r.get("comment")):
             continue
         slug = r.get("professor_slug")
+        if is_denied_key(r.get("name_key")):
+            continue
         code = norm_code(r.get("course_code"))
         k = (slug, code, dedup_key(r.get("comment")))
         if k in seen:

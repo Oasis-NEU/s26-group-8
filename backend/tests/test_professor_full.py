@@ -13,8 +13,9 @@ class RecordingQuery:
     """Fake query()/query_one() that records each SQL it is asked to run and
     returns canned rows based on which table the SQL targets."""
 
-    def __init__(self):
+    def __init__(self, catalog=None):
         self.calls = []  # list of SQL strings, in order
+        self.catalog = catalog or {}  # fields to override on the catalog row
 
     def _rows_for(self, sql):
         s = sql.lower()
@@ -24,7 +25,7 @@ class RecordingQuery:
                      "department": "Khoury", "rmp_rating": 4.1, "trace_rating": 4.3,
                      "avg_rating": 4.2, "difficulty": 3.5, "would_take_again_pct": 88.0,
                      "total_reviews": 31, "professor_url": None, "image_url": None,
-                     "avg_hours": 6.0}]
+                     "avg_hours": 6.0, **self.catalog}]
         if "from rmp_reviews" in s:
             return [{"course": "CS3500", "quality": 5, "difficulty": 3, "date": "2024",
                      "tags": "", "attendance": "", "grade": "A", "textbook": "",
@@ -81,8 +82,8 @@ def _fake_fetch_reddit_mentions(slug, query_fn):
              "created_utc": r.get("created_utc")} for r in rows]
 
 
-def _build(slug="olin-guha"):
-    rq = RecordingQuery()
+def _build(slug="olin-guha", catalog=None):
+    rq = RecordingQuery(catalog)
     data = build_full(slug, rq.query, rq.query_one, sanitize=lambda t: t,
                       fetch_reddit_mentions=_fake_fetch_reddit_mentions,
                       is_authed=False)
@@ -123,6 +124,22 @@ def test_full_returns_profile_fields():
     assert data["avgRating"] == 4.2
     assert data["totalRatings"] == 31
     assert data["wouldTakeAgainPct"] == 88.0
+
+
+def test_unrated_professor_serves_null_avg_rating_rather_than_zero():
+    """NULL avg_rating must stay null across the wire, not become 0.0.
+
+    precompute writes NULL for a professor with no RMP ratings and no responses
+    to TRACE's overall question — 2,327 rows of the catalog, ~2,083 of which
+    still carry a course list and so render a stats card. Coalescing to 0.0 made
+    that card read "0.00" under five empty stars, while Total Ratings beside it
+    read "—", because that one treats 0 as absent. 0 is not a rating: the scale
+    starts at 1. Every other producer of this field (server.py's leaderboard and
+    catalog rows, bookmarks.py) already serves None; this was the odd one out.
+    """
+    data, _ = _build(catalog={"avg_rating": None, "rmp_rating": None,
+                              "trace_rating": None, "total_reviews": 0})
+    assert data["avgRating"] is None
 
 
 def test_full_includes_reviews_trace_comments_and_reddit():

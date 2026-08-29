@@ -58,6 +58,17 @@ class Professor:
     professor_url: Optional[str] = None
     graphql_id: Optional[str] = None  # base64 "Teacher-<id>" used for ratings query
     reviews: List[Review] = field(default_factory=list)
+    # Did review pagination run to the end, or stop on a failed page?
+    #
+    # A truncated fetch is indistinguishable from a complete one by inspection:
+    # both are a plausible list of reviews. It matters downstream because
+    # precompute counts num_ratings and remeans `rating` from these rows rather
+    # than trusting RMP's own counter, so a professor whose page 2 failed is
+    # published with a real-looking rating computed from part of their reviews.
+    #
+    # Defaults True so a professor who is never fetched (no graphql_id, zero
+    # ratings) is not reported as truncated.
+    reviews_complete: bool = True
 
     def to_dict(self, include_reviews: bool = True) -> Dict[str, Any]:
         """Convert the professor to a dictionary.

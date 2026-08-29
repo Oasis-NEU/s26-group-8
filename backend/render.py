@@ -187,7 +187,12 @@ def professor_html(profile: dict, reviews: list, canonical: str,
                    trace_count: int = 0) -> str:
     name = profile.get("name") or ""
     dept = profile.get("department") or ""
-    avg = profile.get("avgRating") or 0
+    # Falsy, not just None, covers both the NULL the catalog holds for an
+    # unrated professor and the 0.0 this field used to be coalesced to. 0 is
+    # outside the 1-5 scale either way, so there is no reading of it as a score:
+    # "rated 0/5 by 0 students" is the sentence Google would have indexed for
+    # the ~2,083 unrated professors who still carry a course list.
+    avg = profile.get("avgRating") or None
     total = profile.get("totalRatings") or 0
     wta = profile.get("wouldTakeAgainPct")
     diff = profile.get("difficulty")
@@ -198,6 +203,9 @@ def professor_html(profile: dict, reviews: list, canonical: str,
     summary = (
         f"{name} professor reviews and ratings: {avg}/5 from {total} student "
         f"reviews at Northeastern{wta_txt}. TRACE + RateMyProfessor + Reddit."
+        if avg is not None else
+        f"{name}, Northeastern {dept} professor: no student ratings yet. "
+        "TRACE + RateMyProfessor + Reddit."
     )
     month_year = _month_year(date.today())
 
@@ -207,10 +215,14 @@ def professor_html(profile: dict, reviews: list, canonical: str,
         f"{name} is {_article(dept)} {dept} professor at Northeastern University rated "
         f"{avg}/5 by {total} students{diff_clause}{wta_clause} "
         f"(TRACE + RateMyProfessors + Reddit, updated {month_year})."
+        if avg is not None else
+        f"{name} is {_article(dept)} {dept} professor at Northeastern University "
+        f"with no student ratings yet "
+        f"(TRACE + RateMyProfessors + Reddit, updated {month_year})."
     )
 
     stats = _stat_rows([
-        ("Average rating", f"{avg}/5"),
+        ("Average rating", f"{avg}/5" if avg is not None else None),
         ("Total ratings", total),
         ("Would take again", f"{wta}%" if wta is not None else None),
         ("Difficulty", f"{diff}/5" if diff is not None else None),

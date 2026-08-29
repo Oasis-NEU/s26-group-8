@@ -214,6 +214,14 @@ const Course = () => {
 					</div>
 				</header>
 
+				{summary.isTopics && (
+					<p className="course-topics-notice">
+						This code covers a different class each term, so there is no single
+						course rating for it. The per-professor and per-section scores below
+						each describe one offering.
+					</p>
+				)}
+
 				<section className="course-stats-grid">
 					<RatingStatCard avgRating={summary.avgRating} />
 					<DifficultyStatCard value={avgDifficulty} />

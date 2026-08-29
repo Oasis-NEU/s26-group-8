@@ -1,3 +1,5 @@
+import type { RatingBlend } from "../utils/ratingBlend";
+
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
 /* ---- Types ---- */
@@ -10,8 +12,21 @@ export interface Professor {
   name: string;
   dept: string;
   rmpRating: number | null;
+  /** rmpRating projected onto TRACE's scale — the value avgRating was actually
+   *  pooled from. RMP runs ~0.8 lower and 2.4x wider than TRACE, so the two raw
+   *  numbers are not comparable and avgRating lands outside them often enough to
+   *  read as broken (RMP 5.00 with TRACE 5.00 gave 4.99). Null unless the
+   *  professor has both sources: with RMP alone avgRating already is this value,
+   *  so showing it twice would imply a pooling that never happened. */
+  rmpAdjusted?: number | null;
   traceRating: number | null;
   avgRating: number;
+  /** Ratings: RMP ratings + TRACE overall-question responses. What the
+   *  leaderboard's floor gates on, and what the ranking weights by. */
+  totalReviews?: number;
+  /** Rows of written text: RMP comments + TRACE comment rows. Not a subset of
+   *  totalReviews and usually 2-3x larger, because TRACE stores one row per
+   *  open-ended question per student. Unused by the leaderboard. */
   totalComments?: number;
 }
 
@@ -56,7 +71,12 @@ export interface ProfessorProfile {
   department: string;
   rmpRating: number | null;
   traceRating: number | null;
-  avgRating: number;
+  /* Null for a professor with no RMP ratings and no responses to TRACE's
+     overall question — the catalog holds NULL and the API no longer coalesces
+     it to 0, since 0 is off the bottom of the 1-5 scale and rendered as a real
+     score. Every display of it needs the null branch; "—" is the house style,
+     matching what totalRatings already showed for the same professors. */
+  avgRating: number | null;
   wouldTakeAgainPct: number | null;
   difficulty: number | null;
   totalRatings: number;
@@ -68,6 +88,14 @@ export interface ProfessorProfile {
   focusY: number;
   hoursPerWeek: number | null;
   traceRatingCounts?: Record<string, TraceRatingCounts>;
+  /* Raw RMP put on TRACE's scale, the value avgRating was computed from. Served
+     for two-source professors only: for an RMP-only professor avgRating already
+     is this number. Same field, same rule, as the leaderboard's. */
+  rmpAdjusted?: number | null;
+  /* Parameters for pooling a course-filtered subset, since avgRating describes
+     the whole professor. Absent for a TRACE-only professor, who needs no
+     projection. See utils/ratingBlend.ts. */
+  ratingBlend?: RatingBlend | null;
   radarData?: RadarDataPoint[] | null;
   radarTermTitle?: string | null;
   colleagues?: { name: string; slug: string; avgRating: number | null; totalRatings: number }[];
@@ -305,6 +333,9 @@ export interface CourseSummary {
   avgEnrollment: number | null;
   latestTermTitle: string;
   ratingCount: number | null;
+  /** A code that runs as several unrelated classes in one term, so it has no
+   *  single course rating. avgRating and ratingCount are null when set. */
+  isTopics?: boolean;
 }
 
 export interface CourseInstructorBreakdown {

@@ -1,6 +1,12 @@
 # Data-pipeline deps only (weekly data-refresh workflow, scraper, precompute).
 # The Railway server installs requirements.txt and never imports these.
-pandas
+# Pinned under 3: pandas 3's default string dtype stopped converting NaN to the
+# literal "nan" on astype(str), which precompute.py relies on in ten places —
+# precompute.py:932 crashes on it, and :938/:942 filter on that same literal.
+# The 2026-08-12 refresh installed 3.0.5 (this was unpinned) and died there,
+# after the DB load and prune had already run. Lift the pin with the port, not
+# before.
+pandas>=2.2,<3
 numpy
 tqdm
 requests

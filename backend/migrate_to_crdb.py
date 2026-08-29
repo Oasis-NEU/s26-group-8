@@ -9,6 +9,9 @@ Run:  python backend/migrate_to_crdb.py all
 import os, csv, sys, time
 from dotenv import load_dotenv
 
+import csv_store
+from denylist import denied_hashes, is_denied
+
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 DATABASE_URL = os.getenv("NEW_CRDB_DATABASE_URL") or os.getenv("CRDB_DATABASE_URL")
@@ -63,14 +66,47 @@ def fetch_existing_keys(conn, table: str, key_columns: list[str], key_query: str
         raise RuntimeError(f"fetch_existing_keys failed for {table}: {e}") from e
 
 
+def _camel(snake: str) -> str:
+    head, *rest = snake.split("_")
+    return head + "".join(p.title() for p in rest)
+
+
+def _row_is_denied(row, raw, deny_name) -> bool:
+    """Does this row belong to a professor on the denylist?
+
+    Checks the transformed row and, independently, the raw CSV row under both
+    naming conventions — because the transforms are not format-agnostic and a
+    filter that silently stops matching is the worst failure mode this code has.
+    trace_courses' transform reads camelCase (`instructorFirstName`) while the
+    export in output_data is snake_case, so it yields empty strings for every
+    field; a name check against that output would pass every row through while
+    reporting nothing wrong.
+
+    Fail-safe on purpose: any spelling that matches drops the row. The cost of a
+    false positive is one professor's rows missing from a load that can be re-run;
+    the cost of a false negative is publishing data someone asked to have removed.
+    """
+    for source in (row, raw):
+        if not source:
+            continue
+        for keys in (deny_name, tuple(_camel(c) for c in deny_name)):
+            parts = [str(source.get(k) or "").strip() for k in keys]
+            if any(parts) and is_denied(" ".join(p for p in parts if p)):
+                return True
+    return False
+
+
 def upload_csv(conn, table: str, columns: list[str], csv_path: str,
                transform=None, on_conflict: str = "",
-               key_columns: list[str] = None, existing_keys: set = None):
+               key_columns: list[str] = None, existing_keys: set = None,
+               deny_name: tuple = None):
     if not os.path.exists(csv_path):
         print(f"  File not found: {csv_path}")
         return
 
-    with open(csv_path, "r", encoding="utf-8", errors="replace") as f:
+    # csv_store, not open(): the big TRACE exports may ship zipped, and
+    # DictReader cannot open a .zip the way pandas can.
+    with csv_store.open_text(csv_path) as f:
         reader = csv.DictReader(f)
         batch = []
         total = 0
@@ -86,10 +122,23 @@ def upload_csv(conn, table: str, columns: list[str], csv_path: str,
             key_indices = [columns.index(k) for k in key_columns]
             single_key = len(key_columns) == 1
 
+        # Data-deletion requests: drop the row before it is ever inserted.
+        # `deny_name` names the post-transform columns holding the professor's
+        # name; joined with a space, that is the same string precompute builds a
+        # name_key from. Tables without a name (trace_scores, trace_comments)
+        # reach a professor only through trace_courses, so dropping the course
+        # rows detaches them — purge_denied.py deletes the orphans.
+        denied_active = bool(deny_name) and bool(denied_hashes())
+        denied_rows = 0
+
         for row in reader:
+            raw = row
             if transform:
                 row = transform(row)
             if row is None:
+                continue
+            if denied_active and _row_is_denied(row, raw, deny_name):
+                denied_rows += 1
                 continue
             values = tuple(row[col] for col in columns)
 
@@ -118,7 +167,8 @@ def upload_csv(conn, table: str, columns: list[str], csv_path: str,
                 execute_values(cur, insert_sql, batch, page_size=BATCH_SIZE)
             conn.commit()
             total += len(batch)
-    print(f"  Done: {total:,} rows inserted, {skipped:,} skipped (already in DB).")
+    print(f"  Done: {total:,} rows inserted, {skipped:,} skipped (already in DB)."
+          + (f" {denied_rows:,} withheld (denylist)." if denied_rows else ""))
 
 
 # ──────────────────────────────────────────────
@@ -165,6 +215,7 @@ TABLES = {
         "columns": ["name", "department", "rating", "num_ratings", "would_take_again_pct", "level_of_difficulty", "professor_url"],
         "key_columns": ["name", "department"],
         "csv": "rmp_professors.csv",
+        "deny_name": ("name",),
         "on_conflict": "ON CONFLICT (name, department) DO NOTHING",
         "transform": lambda row: {
             "name": row.get("name", ""),
@@ -201,6 +252,7 @@ TABLES = {
         "key_columns": ["professor_name", "course", "date"],
         "key_query": "SELECT DISTINCT professor_name, course, date FROM rmp_reviews",
         "csv": "rmp_reviews.csv",
+        "deny_name": ("professor_name",),
         "on_conflict": "ON CONFLICT (professor_name, course, date, comment) DO NOTHING",
         "transform": lambda row: {
             "professor_name": row.get("professor_name", ""),
@@ -240,6 +292,7 @@ TABLES = {
         "columns": ["course_id", "school_code", "term_id", "term_title", "instructor_id", "term_end_date", "instructor_first_name", "instructor_last_name", "department_name", "enrollment", "display_name", "section"],
         "key_columns": ["course_id", "instructor_id", "term_id"],
         "csv": "trace_courses.csv",
+        "deny_name": ("instructor_first_name", "instructor_last_name"),
         "on_conflict": "ON CONFLICT (course_id, instructor_id, term_id) DO NOTHING",
         "transform": lambda row: {
             "course_id": int(row["courseId"]) if row.get("courseId") else None,
@@ -319,6 +372,7 @@ TABLES = {
         "columns": ["name", "image_url", "focus_x", "focus_y", "source_page"],
         "key_columns": ["name", "source_page"],
         "csv": "professor_photos.csv",
+        "deny_name": ("name",),
         "on_conflict": "ON CONFLICT (name, source_page) DO NOTHING",
         "transform": lambda row: {
             "name": row.get("name", ""),
@@ -331,10 +385,17 @@ TABLES = {
 }
 
 
-# Full-replace is only safe for tables whose CSV is a complete snapshot of the
-# source each run (the weekly RMP scrape). TRACE/photo CSVs are cumulative
-# artifacts — replacing from them would destroy data.
-REPLACE_ALLOWED = {"rmp_professors", "rmp_reviews"}
+# Full-replace is only safe for a table whose CSV is a complete snapshot of the
+# source each run AND whose ids nothing else references. TRACE/photo CSVs are
+# cumulative artifacts — replacing from them would destroy data.
+#
+# rmp_reviews meets the snapshot half but fails the second: evidence.source_ref
+# for RMP is the review's rowid (scraper/load_evidence_to_crdb.py:208), so
+# truncating orphans the RMP half of the RAG corpus and forces a re-embed. The
+# TRUNCATE also commits before the reload starts, emptying a table the site
+# reads on every professor page. prune_rmp_reviews.py converges the table
+# without either cost — use that instead.
+REPLACE_ALLOWED = {"rmp_professors"}
 
 
 UNIQUE_CONSTRAINTS = {
@@ -416,7 +477,7 @@ def main():
             continue
 
         conf = TABLES[table_name]
-        csv_path = os.path.join(DATA_DIR, conf["csv"])
+        csv_path = csv_store.resolve(DATA_DIR, conf["csv"])
 
         print(f"\n{'='*50}")
         print(f"Uploading: {table_name}")
@@ -425,10 +486,11 @@ def main():
         print(f"  Creating table if not exists...")
         create_table(conn, conf["create_sql"])
 
-        # Full replace: empty the table so RMP-side deletions/edits stop drifting
-        # (the upsert path never deletes or updates). Only runs after the workflow's
-        # sanity floors passed, so the CSV is known-good. rmp_reviews.name_key is
-        # NULL from here until precompute step 5 refills it later in the same run.
+        # Full replace: empty the table so RMP-side edits stop drifting, since
+        # the upsert path never updates. Reachable only for rmp_professors (see
+        # REPLACE_ALLOWED), whose columns are aggregates RMP recomputes and which
+        # no request path reads. Runs only after the workflow's scrape floors
+        # passed, so the CSV is known-good.
         if replace:
             if not os.path.exists(csv_path):
                 sys.exit(f"--replace: {csv_path} missing; refusing to truncate {table_name}")
@@ -452,7 +514,7 @@ def main():
         upload_csv(
             conn, table_name, conf["columns"], csv_path,
             conf.get("transform"), conf.get("on_conflict", ""),
-            key_columns, existing_keys
+            key_columns, existing_keys, conf.get("deny_name")
         )
         elapsed = time.time() - start
         print(f"  Time: {elapsed:.1f}s")

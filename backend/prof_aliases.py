@@ -6,6 +6,25 @@ the server copy was missing 62 of the aliases the catalog was built with.
 """
 
 ALIAS_MAP = {
+    # ── Two different men in one department, both going by "Peter Xu". RMP knows
+    # them only as "Peter", TRACE only by their legal first names, so neither
+    # linked up and no automatic rule can separate them: same surname, same
+    # department, both teaching a 2301-level supply chain course. attach_fuzzy_trace
+    # needs one first name to be a prefix of the other, and neither pair is.
+    # Resolved by matching each RMP listing's course code to its TRACE sections.
+    #
+    #   RMP "Peter Xu" (id 2875022, 11 reviews, MGSC2301, 2023-11..2026-03)
+    #     -> TRACE "peng xu" (15 sections incl. MGSC2301, Fall 2022..Fall 2025)
+    #     https://damore-mckim.northeastern.edu/people/pengpeter-xu/  ("Peng(Peter) Xu")
+    #
+    #   RMP "Peter (Xun) Xu" (id 3161329, 4 reviews, "2301"/supply chain, 2026-04..05)
+    #     -> TRACE "xun xu" (SCHM2301 + MISM6401/6405, Spring 2025 onward)
+    #     https://damore-mckim.northeastern.edu/people/xun-xu/
+    #
+    # Do not collapse these two into each other: the review dates alone rule it
+    # out (Peng's reviews start in 2023, Xun has no sections before Spring 2025).
+    "peter xu": "peng xu",
+    "peter (xun) xu": "xun xu",
     "laney strange": "elena strange",
     "ben tasker": "benjamin tasker",
     "alberto de la torre": "alberto de la torre duran",
@@ -117,6 +136,27 @@ ALIAS_MAP = {
     "sarthak gupta": "sarthak suhrid gupta",
 }
 
+
+# Distinct people the surname fuzzy match in precompute.attach_fuzzy_trace
+# would otherwise merge, because one first name is a prefix of the other the
+# same way a nickname is: "yan" of "yaning", "michael" of "michaela". ALIAS_MAP
+# cannot express this — it maps a name onto another name, and what is needed
+# here is the refusal to.
+#
+# Nothing lexical separates these from "dan" -> "daniel", and department does
+# not either: cross-college teaching is common, so a college mismatch flagged
+# three legitimate matches (Lungeanu, Koloski, Laverdiere) for every real
+# collision it caught. Entries are added by hand when someone spots one.
+#
+# michaela lewis is *also* caught by the trace_courses check in
+# attach_fuzzy_trace, which needs no list; she is here so the pair is recorded
+# in one place if her TRACE courses ever go away.
+FUZZY_DENY = {
+    ("yan li", "yaning li"),
+    ("michaela lewis", "michael lewis"),
+}
+
+
 def _normalize_name(name: str) -> str:
     import re, unicodedata
     s = str(name).strip().lower()
@@ -126,3 +166,4 @@ def _normalize_name(name: str) -> str:
 
 # Ensure keys/values match normalize_name() used by server.py/precompute.py.
 ALIAS_MAP = {_normalize_name(k): _normalize_name(v) for k, v in ALIAS_MAP.items()}
+FUZZY_DENY = {(_normalize_name(a), _normalize_name(b)) for a, b in FUZZY_DENY}

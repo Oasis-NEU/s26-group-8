@@ -28,6 +28,17 @@ def _resolve_professor(slug, query_one):
     return prof
 
 
+def trace_key(prof):
+    """TRACE-side name_key for a catalog row.
+
+    Fuzzy-matched professors carry their TRACE scores under a different name
+    than RMP uses; precompute records which one in trace_name_key. NULL (exact
+    match, or a catalog built before the column existed) falls back to the
+    professor's own key. RMP-side lookups must keep using prof["name_key"].
+    """
+    return prof.get("trace_name_key") or prof["name_key"]
+
+
 def _course_code(display_name):
     dn = str(display_name or "")
     m = re.match(r"^([A-Z]+\d+)", dn)
@@ -113,16 +124,28 @@ def _scan_trace_scores(name_key, query):
     return challeng_by_ct, hours_by_ct, rating_dist_by_course, challeng_sum, challeng_weight
 
 
-def build_profile_unauthed(prof, trace_course_rows, query):
+def build_profile_unauthed(prof, trace_course_rows, query, blend_fields=None):
     """Build the unauthenticated profile dict from an already-fetched catalog
-    row and trace_courses rows (no further catalog/course lookups)."""
-    name_key = prof["name_key"]
+    row and trace_courses rows (no further catalog/course lookups).
+
+    `blend_fields` is server._rating_blend_fields' output for this professor —
+    rmpAdjusted and the parameters the course-filtered card pools a subset with.
+    Injected rather than computed here for the same reason every query is: this
+    module stays free of the calibration fit and its catalog scan, so the two
+    payload builders serve one set of fields from one implementation.
+    """
     profile = {
         "name": prof["name"],
         "department": prof["department"],
         "rmpRating": round(prof["rmp_rating"], 2) if prof["rmp_rating"] else None,
         "traceRating": round(prof["trace_rating"], 2) if prof["trace_rating"] else None,
-        "avgRating": round(prof["avg_rating"], 2) if prof["avg_rating"] else 0.0,
+        # None, not 0.0: precompute leaves avg_rating NULL for a professor with
+        # no RMP ratings and no responses to TRACE's overall question, and 0 is
+        # not a rating — the scale starts at 1, so the card rendered "0.00" under
+        # five empty stars while Total Ratings beside it read "—". Matches every
+        # other producer of this field (server.py:879, server.py:1102,
+        # bookmarks.py); this was the only one that coalesced.
+        "avgRating": round(prof["avg_rating"], 2) if prof["avg_rating"] else None,
         "wouldTakeAgainPct": round(prof["would_take_again_pct"], 1) if prof["would_take_again_pct"] else None,
         "difficulty": round(prof["difficulty"], 2) if prof["difficulty"] else None,
         "totalRatings": prof["total_reviews"],
@@ -132,9 +155,12 @@ def build_profile_unauthed(prof, trace_course_rows, query):
         "focusY": prof.get("focus_y") if prof.get("focus_y") is not None else 30.0,
         "hoursPerWeek": round(prof["avg_hours"], 1) if prof["avg_hours"] else None,
     }
+    profile.update(blend_fields or {})
 
+    # TRACE scores are filed under the TRACE spelling of the name, which is not
+    # prof["name_key"] for a fuzzy-matched professor. See trace_key.
     (challeng_by_ct, hours_by_ct, rating_dist_by_course,
-     challeng_sum, challeng_weight) = _scan_trace_scores(name_key, query)
+     challeng_sum, challeng_weight) = _scan_trace_scores(trace_key(prof), query)
 
     trace_avg_difficulty = round(challeng_sum / challeng_weight, 2) if challeng_weight > 0 else None
     profile["traceRatingCounts"] = rating_dist_by_course
@@ -263,11 +289,15 @@ def build_trace_course_rows(name_key, query):
 
 
 def build_full(slug, query, query_one, sanitize,
-               fetch_reddit_mentions=None, is_authed=False):
+               fetch_reddit_mentions=None, is_authed=False, blend_fields=None):
     """Orchestrate the unauthenticated /full payload with shared lookups.
 
     Returns the combined profile+reviews dict, or None if the professor does
     not exist (caller maps None to a 404).
+
+    `blend_fields` is a callable taking the resolved catalog row — the professor
+    is resolved here, so the caller cannot compute it up front. See
+    build_profile_unauthed.
     """
     if fetch_reddit_mentions is None:
         def fetch_reddit_mentions(_slug, _q):
@@ -277,10 +307,14 @@ def build_full(slug, query, query_one, sanitize,
     if not prof:
         return None
 
-    name_key = prof["name_key"]
-    trace_course_rows = build_trace_course_rows(name_key, query)
+    # trace_key, not name_key: these rows are the professor's course list and the
+    # (course, instructor, term) keys every TRACE comment is looked up through, so
+    # a fuzzy-matched professor gets an empty page under the RMP spelling.
+    trace_course_rows = build_trace_course_rows(trace_key(prof), query)
 
-    profile = build_profile_unauthed(prof, trace_course_rows, query)
+    profile = build_profile_unauthed(
+        prof, trace_course_rows, query,
+        blend_fields(prof) if blend_fields else None)
     reviews = build_reviews(slug, prof, trace_course_rows, query, sanitize,
                             fetch_reddit_mentions, is_authed)
 

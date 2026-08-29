@@ -1,4 +1,26 @@
+import os
+
 import pytest
+
+# Test modules pin the JWT secret with os.environ.setdefault("JWT_SECRET",
+# "test-secret"), which silently loses whenever a real value is already in the
+# environment — and importing server or precompute calls load_dotenv(), which
+# injects the developer's real .env. Whether the suite passed then came down to
+# alphabetical collection order: if a module calling load_dotenv() sorted before
+# the module doing the setdefault, every token signed with "test-secret" failed
+# to validate and the auth-gated tests 401'd. conftest is imported before any
+# test module, so pinning it here makes the suite order- and .env-independent.
+# load_dotenv() does not override existing vars, so this value survives.
+os.environ["JWT_SECRET"] = "test-secret"
+
+# migrate_to_crdb reads the DB URL at import and sys.exits when it is missing,
+# so importing it for a pure-logic test (REPLACE_ALLOWED, TABLES) takes the whole
+# collection down wherever backend/.env is absent — which is every CI run, since
+# ci.yml only checks the repo out. Set here rather than in the test modules for
+# the same reason JWT_SECRET is: conftest is imported first, and load_dotenv()
+# does not override an existing var. A deliberately unusable value — nothing in
+# the suite connects, and a real URL here would let a stray test reach prod.
+os.environ["CRDB_DATABASE_URL"] = "postgresql://test:test@localhost:26257/test"
 
 
 @pytest.fixture

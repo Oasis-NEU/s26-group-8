@@ -8,7 +8,7 @@ const Privacy = () => {
         <div className="terms-shell">
           <header className="terms-header">
             <h1>Privacy Policy</h1>
-            <p className="terms-meta">Effective July 28, 2026 &middot; RateMyHusky</p>
+            <p className="terms-meta">Effective August 12, 2026 &middot; RateMyHusky</p>
           </header>
 
           <div className="terms-body">
@@ -25,6 +25,11 @@ const Privacy = () => {
                 RateMyHusky is an independent student project and is not affiliated with,
                 endorsed by, or officially connected to Northeastern University or RateMyProfessors.
               </p>
+              <p>
+                If you are a professor or instructor whose information appears on the site,
+                see <em>Information About Professors &amp; Instructors</em> (Section 8) — that
+                section covers what we publish about you and how to ask us to remove it.
+              </p>
             </section>
 
             <section className="terms-section">
@@ -34,28 +39,35 @@ const Privacy = () => {
                 <li>
                   <strong>Google Sign-In:</strong> when you authenticate with your{' '}
                   <code>@husky.neu.edu</code> Google account, we receive your name, email
-                  address, and profile photo from Google. This information is encoded in a
-                  JWT token stored in your browser; your name, email, and photo are never
-                  written to a server-side database. Your Google account id is stored
-                  server-side if you bookmark a professor or course or use the Ask feature
-                  — see the Bookmarks and Ask items below.
+                  address, profile photo, and Google account id. Your name, email, and photo
+                  are encoded in a JWT token stored in your browser and are never written to a
+                  server-side database. Your Google account id is stored server-side if you
+                  bookmark a professor or course — see the Bookmarks item below.
                 </li>
                 <li>
-                  <strong>Browser preferences:</strong> your selected theme (dark/light) and
-                  catalog view mode are saved to <code>localStorage</code> on your device only
-                  and are never transmitted to our servers.
+                  <strong>Browser preferences:</strong> your selected theme (dark/light), your
+                  catalog view mode, and flags recording that you dismissed an on-page tip are
+                  saved to <code>localStorage</code> on your device only and are never
+                  transmitted to our servers. Which review tab you had open on a professor page
+                  is held in <code>sessionStorage</code> so navigation works, and is dropped
+                  when you close the tab.
+                </li>
+                <li>
+                  <strong>IP address:</strong> your IP address is used in the moment a request
+                  arrives to apply rate limits, and it is discarded when the request finishes.
+                  We do not write your IP address to our database.
                 </li>
                 <li>
                   <strong>Feedback form:</strong> the feedback form collects a message type,
                   description, and an optional email address. Submissions are transmitted to
                   the RateMyHusky team via email and are not stored in a database. Submitted
                   information is used solely to improve the service. The form is protected by
-                  a CAPTCHA challenge (see Third-Party Services). If you submit an "Ask Ban
-                  Appeal" or a "Data Deletion Request," an email address is required so we can
-                  respond, and (if you are signed in) your account identifier is included so we
-                  can locate your Ask activity and bookmarks to review or delete them. That
-                  account identifier is derived from your sign-in token at the time you submit
-                  and is not retained beyond handling your request.
+                  a CAPTCHA challenge (see Third-Party Services). If you submit a
+                  "Data Deletion Request," an email address is required so we can respond, and
+                  (if you are signed in) your account identifier is included so we can locate
+                  the data held for your account and delete it. That account identifier is
+                  derived from your sign-in token at the time you submit and is not retained
+                  beyond handling your request.
                 </li>
                 <li>
                   <strong>Bookmarks:</strong> when you are signed in and bookmark a professor or
@@ -64,20 +76,12 @@ const Privacy = () => {
                   account is capped at 200 bookmarks. These records are retained on our servers
                   — see <em>How We Store Your Information</em> below.
                 </li>
-                <li>
-                  <strong>Ask (AI question) feature:</strong> when you are signed in and submit
-                  a question to the Ask feature, we log the question to operate the feature and
-                  to detect abuse. Each logged entry includes the question text, the AI-generated
-                  answer, the professor or course identified, how many tokens were used, the
-                  response time, your Google account id, and a one-way hash of your IP address
-                  (your raw IP address is never stored). These logs are
-                  retained on our servers — see <em>How We Store Your Information</em> below.
-                </li>
               </ul>
               <p>
-                Outside of the Ask feature, we do <strong>not</strong> log your search queries,
-                which professor or course pages you viewed, or any other browsing activity on
-                our servers.
+                We do <strong>not</strong> log your search queries, which professor or course
+                pages you viewed, or any other browsing activity on our servers. The analytics
+                providers listed under <em>Third-Party Services</em> collect their own data
+                about your visit.
               </p>
             </section>
 
@@ -89,16 +93,11 @@ const Privacy = () => {
                 <li>Restrict access to TRACE course evaluation comments to signed-in users</li>
                 <li>Display your name and profile photo in the navigation bar while signed in</li>
                 <li>Save and display the professors and courses you bookmark</li>
-                <li>
-                  Answer your Ask questions, enforce per-account and per-IP rate limits, and
-                  detect and prevent abuse of the Ask feature (such as off-topic or
-                  prompt-injection attempts)
-                </li>
+                <li>Apply rate limits across the site so automated traffic cannot overwhelm it</li>
               </ul>
               <p>
-                We do not use your information for advertising, profiling, or any purpose beyond
-                operating the service. We do not sell, rent, or share your personal information
-                with third parties for their own use.
+                We do not sell, rent, or share your personal information with third parties for
+                their own use, and we do not build profiles of individual users.
               </p>
             </section>
 
@@ -106,30 +105,28 @@ const Privacy = () => {
               <h2>4. How We Store Your Information</h2>
               <p>
                 Your sign-in information is encoded in a JWT (JSON Web Token). During the
-                Google OAuth handshake, a short-lived <code>httpOnly</code> cookie is used
-                to facilitate the flow; once complete, the resulting JWT is stored in your
-                browser's <code>localStorage</code> and the handshake cookie is cleared.
+                Google OAuth handshake, short-lived <code>httpOnly</code> cookies are used
+                to carry the flow; once complete, the resulting JWT is stored in your
+                browser's <code>localStorage</code> and the handshake cookies are cleared.
                 The token expires automatically after 30 days. RateMyHusky does not maintain
                 user accounts or profiles; the only per-user data we store server-side is your
-                bookmarks and any Ask feature logs, described below.
+                bookmarks, described below.
               </p>
               <p>
                 Signing out deletes the token from your browser immediately.
               </p>
               <p>
-                In addition, if you bookmark a professor or course, that bookmark is stored
+                If you bookmark a professor or course, that bookmark is stored
                 server-side in our database, keyed to your Google account id, along with the
                 item type, the professor or course identifier, and a timestamp. Bookmarks
                 persist across sign-ins until you remove them or request deletion — see{' '}
                 <em>Your Rights &amp; Choices</em>.
               </p>
               <p>
-                Separately, if you use the Ask feature, the question logs described above are
-                stored server-side in our database. These logs are keyed to your Google account
-                id and a hashed IP address (never your raw IP) and are retained to
-                operate the feature and detect abuse. You may request deletion of your Ask logs
-                by submitting a <strong>Data Deletion Request</strong> through the feedback form
-                while signed in — see <em>Your Rights &amp; Choices</em>.
+                Our database is a managed CockroachDB cluster hosted in the United States, the
+                API runs on Railway, and the site is served through Vercel. Each of these
+                providers processes data on our behalf under its own terms; see{' '}
+                <em>Third-Party Services</em>.
               </p>
             </section>
 
@@ -176,19 +173,6 @@ const Privacy = () => {
                   </a>.
                 </li>
                 <li>
-                  <strong>Groq</strong>: powers the Ask feature. When you submit an Ask question,
-                  your question text and the relevant professor, course, and Reddit information
-                  we retrieve are sent to Groq to classify the question and generate an answer.
-                  We do not send Groq your name, email, or profile photo. Subject to{' '}
-                  <a
-                    href="https://groq.com/privacy-policy/"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    Groq's Privacy Policy
-                  </a>.
-                </li>
-                <li>
                   <strong>Resend</strong>: delivers email for the feedback form. When you submit
                   feedback, your message and any optional reply email address are transmitted
                   through Resend to reach our team. Subject to{' '}
@@ -213,32 +197,50 @@ const Privacy = () => {
                   </a>.
                 </li>
                 <li>
-                  <strong>RateMyProfessors, Northeastern TRACE &amp; Reddit</strong>: these are
-                  data sources only. We do not send any user data to these services.
+                  <strong>Vercel, Railway &amp; Cockroach Labs</strong>: host the site, the API,
+                  and the database respectively. As part of normal infrastructure operation they
+                  may log request data such as IP addresses and user-agent strings. Subject to{' '}
+                  <a
+                    href="https://vercel.com/legal/privacy-policy"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Vercel's
+                  </a>
+                  ,{' '}
+                  <a
+                    href="https://railway.com/legal/privacy"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Railway's
+                  </a>
+                  , and{' '}
+                  <a
+                    href="https://www.cockroachlabs.com/privacy/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Cockroach Labs'
+                  </a>{' '}
+                  privacy policies.
+                </li>
+                <li>
+                  <strong>RateMyProfessors, Northeastern TRACE, Northeastern faculty pages
+                  &amp; Reddit</strong>: these are data sources only. We do not send any user
+                  data to these services.
                 </li>
               </ul>
-              <p>
-                Our hosting provider (Vercel) may log standard server-side request data such
-                as IP addresses and user-agent strings as part of normal infrastructure
-                operation. This is subject to{' '}
-                <a
-                  href="https://vercel.com/legal/privacy-policy"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Vercel's Privacy Policy
-                </a>.
-              </p>
             </section>
 
             <section className="terms-section">
               <h2>6. Cookies &amp; Local Storage</h2>
               <p>
-                During the Google OAuth sign-in flow, a short-lived <code>httpOnly</code> cookie
-                is set to facilitate the authentication handshake; it is not used for tracking
-                and is cleared after sign-in completes. Google Analytics may set cookies (e.g.,{' '}
-                <code>_ga</code>, <code>_gid</code>) to distinguish unique users and track
-                anonymous session data. You can opt out of Google Analytics tracking by
+                During the Google OAuth sign-in flow, short-lived <code>httpOnly</code> cookies
+                are set to carry your return destination through the handshake; they are not used
+                for tracking and are cleared once sign-in completes. Google Analytics may set
+                cookies (e.g., <code>_ga</code>, <code>_gid</code>) to distinguish unique users
+                and track anonymous session data. You can opt out of Google Analytics tracking by
                 installing the{' '}
                 <a
                   href="https://tools.google.com/dlpage/gaoptout"
@@ -249,8 +251,10 @@ const Privacy = () => {
                 </a>.
               </p>
               <p>
-                <code>localStorage</code> is used to store your JWT session token and browser
-                preferences (theme, view mode). This data stays on your device and is never
+                <code>localStorage</code> is used to store your JWT session token
+                (<code>auth_token</code>), your theme, your catalog view mode, and flags for
+                on-page tips you have dismissed. <code>sessionStorage</code> holds the review tab
+                you last opened, and is cleared when you close the tab. None of this data is
                 synced to our servers.
               </p>
             </section>
@@ -264,36 +268,32 @@ const Privacy = () => {
               <ul>
                 <li>
                   <strong>Right to access:</strong> you may request a copy of the data we hold
-                  that is associated with you. In practice this is limited to your bookmarks
-                  and Ask feature logs (if any); your sign-in details and preferences live only
-                  in your own browser and are not accessible to us.
+                  that is associated with you. In practice this is limited to your bookmarks;
+                  your sign-in details and preferences live only in your own browser and are not
+                  accessible to us.
                 </li>
                 <li>
                   <strong>Right to deletion:</strong> you can <strong>sign out</strong> at any
                   time to immediately delete your JWT token from your browser, and{' '}
                   <strong>clear localStorage</strong> in your browser settings to remove your
                   session token and stored preferences. You can remove an individual bookmark at
-                  any time by un-bookmarking it. To delete the Ask feature logs and bookmarks we
-                  hold, sign in and submit a <strong>Data Deletion Request</strong> through the
+                  any time by un-bookmarking it. To delete everything we hold for your account,
+                  sign in and submit a <strong>Data Deletion Request</strong> through the
                   feedback form: an email address is required, and your signed-in account
-                  identifier is included so we can verify your identity and delete every Ask log
-                  and bookmark tied to your account. (You may also email{' '}
+                  identifier is included so we can verify your identity and delete the records
+                  tied to your account. (You may also email{' '}
                   <a href="mailto:support@ratemyhusky.com">support@ratemyhusky.com</a>, though
                   because we never store your email address, we can only act on a request we can
                   tie to your account — submitting the form while signed in is the reliable path.)
-                  This is a separate request from appealing an Ask suspension: an{' '}
-                  <strong>Ask Ban Appeal</strong> asks us to review and restore your access,
-                  whereas a <strong>Data Deletion Request</strong> removes your Ask data and
-                  bookmarks from our servers entirely.
                 </li>
                 <li>
                   <strong>Right to correction:</strong> your name, email, and photo come
                   directly from Google and are never stored on our servers, so corrections to
                   them are made through your Google account. Your Google account id also comes
-                  from Google and cannot be edited; we store it with your bookmarks and Ask
-                  logs, and a Data Deletion Request removes it (see Right to deletion above).
+                  from Google and cannot be edited; we store it with your bookmarks, and a Data
+                  Deletion Request removes it (see Right to deletion above).
                   If you believe professor or course data displayed on the site is inaccurate,
-                  you can report it through the feedback form.
+                  you can report it through the feedback form under "Incorrect Data."
                 </li>
                 <li>
                   <strong>Right to raise a concern:</strong> you may contact us at any time at{' '}
@@ -303,13 +303,62 @@ const Privacy = () => {
               </ul>
               <p>
                 Note that there is no account to delete. Once your token is cleared, no personal
-                data remains in our systems, except for any bookmarks and Ask feature logs, which
-                remain until you request their deletion.
+                data remains in our systems except for any bookmarks, which remain until you
+                request their deletion.
               </p>
             </section>
 
             <section className="terms-section">
-              <h2>8. Children's Privacy</h2>
+              <h2>8. Information About Professors &amp; Instructors</h2>
+              <p>
+                Most of the personal information on RateMyHusky is about professors and
+                instructors rather than about the students using the site, so it is worth
+                stating plainly what we publish and where it comes from:
+              </p>
+              <ul>
+                <li>
+                  Name, department, and college, together with metrics we compute from the
+                  underlying data (average rating, difficulty, would-take-again, per-term
+                  history, and department comparisons).
+                </li>
+                <li>
+                  Ratings and written reviews from RateMyProfessors, and scores and written
+                  comments from Northeastern's TRACE course evaluations. TRACE comments are
+                  shown only to signed-in <code>@husky.neu.edu</code> users.
+                </li>
+                <li>
+                  A profile photo, taken from the public Northeastern faculty and college
+                  directory pages that publish it.
+                </li>
+                <li>
+                  Excerpts of public Reddit posts and comments that mention the professor, shown
+                  with the subreddit and a link to the original, along with a sentiment label our
+                  pipeline derives from the text. We do not display or store Reddit usernames.
+                </li>
+              </ul>
+              <p>
+                We publish no contact details, no course rosters, and nothing that is not already
+                public in the sources above (except TRACE comments, which stay behind sign-in as
+                Northeastern publishes them). Data is refreshed on a weekly schedule.
+              </p>
+              <p>
+                <strong>Removal requests.</strong> If you are a professor or instructor and want
+                your information taken down, email{' '}
+                <a href="mailto:legal@ratemyhusky.com">legal@ratemyhusky.com</a> or use the
+                feedback form. We honor these requests. Once processed, your name is added to a
+                removal list that every data loader checks before writing, so a weekly refresh
+                cannot reinstate you, and the rows already loaded — your page, your ratings and
+                comments, your Reddit mentions, and the evidence corpus built from them — are
+                deleted. Two limits are worth being straight about: we cannot remove your data
+                from RateMyProfessors, TRACE, or Reddit themselves, and our own private source
+                files can still contain your rows until the upstream source stops publishing
+                them, though nothing published on the site can reach them. If you
+                need removal from a source itself, contact that source directly.
+              </p>
+            </section>
+
+            <section className="terms-section">
+              <h2>9. Children's Privacy</h2>
               <p>
                 RateMyHusky is intended for Northeastern University students (aged 18 and
                 older) and is not directed at children. We do not knowingly collect personal
@@ -320,7 +369,7 @@ const Privacy = () => {
             </section>
 
             <section className="terms-section">
-              <h2>9. Changes to This Policy</h2>
+              <h2>10. Changes to This Policy</h2>
               <p>
                 We may update this Privacy Policy from time to time. The effective date at the
                 top of this page will be updated when changes are made. Continued use of
@@ -330,7 +379,7 @@ const Privacy = () => {
             </section>
 
             <section className="terms-section terms-section--last">
-              <h2>10. Contact</h2>
+              <h2>11. Contact</h2>
               <p>
                 If you have questions about this Privacy Policy or want to report a concern,
                 please email us at{' '}

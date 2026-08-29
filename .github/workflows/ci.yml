@@ -41,6 +41,15 @@ jobs:
       - run: npm run build
         env:
           SITEMAP_API_URL: http://127.0.0.1:9
+      # The displayed rating blend exists three times: vectorised in
+      # precompute.calibrate_rmp, scalar in rating_scale.project_rmp, and in
+      # TypeScript in utils/ratingBlend.ts. pytest pins the first two to each
+      # other; nothing ran the third. test_rating_blend recomputes the constants
+      # this asserts, but it compares them against literals in the Python file
+      # and never reads or executes the .ts — so editing the arithmetic in the
+      # module the browser actually runs kept the whole suite green. Blocking,
+      # not soft: it is pure arithmetic with no environment to be flaky about.
+      - run: npm run selftest
 
   lint:
     name: Frontend lint (soft)
